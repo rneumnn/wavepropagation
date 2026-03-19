@@ -8,7 +8,7 @@ class element_base:
     def __init__(self):
         return
 
-    def apply(self, field):
+    def apply(self, field:Field)->Field:
         raise NotImplementedError("Subclasses should implement this method.")
     
 class Lens(element_base):

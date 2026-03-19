@@ -1,24 +1,53 @@
 from .field import Field
 from .spectrum import PolychromaticField, SpectralComponent
+from .elements import element_base
+import numpy as np
 
 
 class OpticalSystem:
-    def __init__(self, elements):
+    def __init__(self, elements: list[element_base]):
         self.elements = list(elements)
 
-    def run(self, obj):
+    def run(self, obj: Field|PolychromaticField, **kwargs) -> tuple[Field|PolychromaticField, list[Field|PolychromaticField]|None]:
+        keep_history = kwargs.get('keep_history', False)
+
+        def apply_element(field:Field|PolychromaticField) -> Field|PolychromaticField:
+            current = elem.apply(field)
+            if keep_history:
+                if isinstance(current, Field):
+                    history.append(current.copy())
+                elif isinstance(current, PolychromaticField):
+                    historyField = current.copy()
+                    return current, historyField
+            return current
+        
+        if keep_history:
+            history = [obj.copy()]
+
         if isinstance(obj, Field):
             current = obj.copy()
             for elem in self.elements:
-                current = elem.apply(current)
-            return current
+                current = apply_element(current)
+            if keep_history:
+                return current, history
+            return current, None
 
         if isinstance(obj, PolychromaticField):
             out_components = []
-            for comp in obj.components:
+            if keep_history:
+                history_components = np.empty((len(obj.components), len(self.elements)), dtype=object)
+            for c,comp in enumerate(obj.components):
                 current = comp.field.copy()
-                for elem in self.elements:
-                    current = elem.apply(current)
+                for e, elem in enumerate(self.elements):
+                    current, hist = apply_element(current)
+                    if keep_history:
+                        history_components[c, e] = (
+                            SpectralComponent(
+                                wavelength=comp.wavelength,
+                                weight=comp.weight,
+                                field=hist
+                            )
+                        )
                 out_components.append(
                     SpectralComponent(
                         wavelength=comp.wavelength,
@@ -26,6 +55,12 @@ class OpticalSystem:
                         field=current,
                     )
                 )
-            return PolychromaticField(out_components)
+            if keep_history:
+                #fetch history for each element toget a list of PolychromaticField for each element
+                history = []
+                for e in range(len(self.elements)):
+                    history.append(PolychromaticField(history_components[:, e]))
+                return PolychromaticField(out_components), history
+            return PolychromaticField(out_components), None
 
         raise TypeError("Unsupported object type")

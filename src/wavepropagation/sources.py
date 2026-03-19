@@ -1,5 +1,3 @@
-from networkx import sigma
-
 from .field import Field
 from .grid import Grid
 from .spectrum import SpectralComponent, PolychromaticField
@@ -7,6 +5,28 @@ import numpy as np
 from scipy.special import genlaguerre
 from scipy.special import jv
 from dataclasses import dataclass
+
+def calculate_kr_from_angle(wavelength: float, axicon_half_angle:float, n_axicon:float=1.6, n_medium:float=1.0) -> tuple[float, float]:
+    """
+    Calculates k_r for the besselbeam definition based on a given axicon.
+    
+        :param wavelength: field wavelength in meters
+        :type wavelength: float
+        :param axicon_half_angle: axicon half angle (cone angle to optical axis) in radians
+        :type axicon_half_angle: float
+        :param n_axicon: axicon refrective index Default: 1.6
+        :type n_axicon: float
+        :param n_medium: medium refrective index Default: 1
+        :type n_medium: float
+        :return: tuple of (kr, kz) where kr is the transverse wavevector component and kz is the longitudinal wavevector component
+        :rtype: tuple[float, float]
+    """
+    #angle of refracted ray to optical axis
+    k = 2 * np.pi * n_medium / wavelength
+    theta = np.arcsin((n_axicon/n_medium)*np.sin(np.pi/2 - axicon_half_angle)) + axicon_half_angle - np.pi/2
+    kr = k * np.sin(theta)
+    kz = k * np.cos(theta)
+    return kr, kz
 
 class MonochromaticSource:
     """ 
@@ -51,13 +71,20 @@ class MonochromaticSource:
     def bessel_beam(
         grid: Grid,
         wavelength: float,
-        kr: float,
+        kr: float|None = None,
+        m:int = 0,
         envelope_waist: float | None = None,
         amplitude: complex = 1.0,
         polarization=(1.0, 0.0),
         n_medium: float = 1.0,
+        n_axicon: float = 1.6,
+        axicon_half_angle: float|None = None,
     ) -> Field:
-        A = amplitude * jv(0, kr * grid.R)
+        if kr is None:
+            if axicon_half_angle is None:
+                raise ValueError("Either kr or axicon_half_angle must be provided")
+            kr, kz = calculate_kr_from_angle(wavelength, axicon_half_angle=axicon_half_angle, n_axicon=n_axicon, n_medium=n_medium)
+        A = amplitude * jv(m, kr * grid.R) * np.exp(1j * m * grid.Phi)
         if envelope_waist is not None:
             A *= np.exp(-(grid.R**2) / envelope_waist**2)
         px, py = polarization
@@ -94,6 +121,45 @@ class PolychromaticSource:
                 w0=w0,
                 polarization=polarization,
                 n_medium=n_medium,
+            )
+            components.append(
+                SpectralComponent(
+                    wavelength=float(wl),
+                    weight=float(wt),
+                    field=field,
+                )
+            )
+
+        return PolychromaticField(components)
+    
+    def polychromatic_bessel_beam(
+        grid: Grid,
+        wavelengths,
+        weights,
+        kr: float|None = None,
+        envelope_waist: float | None = None,
+        polarization=(1.0, 0.0),
+        n_medium: float = 1.0,
+        n_axicon: float = 1.6,
+        axicon_half_angle: float|None = None
+    ):
+        wavelengths = np.asarray(wavelengths, dtype=float)
+        weights = np.asarray(weights, dtype=float)
+
+        if wavelengths.shape != weights.shape:
+            raise ValueError("wavelengths and weights must have same shape")
+
+        components = []
+        for wl, wt in zip(wavelengths, weights):
+            field = MonochromaticSource.bessel_beam(
+                grid=grid,
+                wavelength=float(wl),
+                kr=kr,
+                envelope_waist=envelope_waist,
+                polarization=polarization,
+                n_medium=n_medium,
+                n_axicon=n_axicon,
+                axicon_half_angle=axicon_half_angle
             )
             components.append(
                 SpectralComponent(
