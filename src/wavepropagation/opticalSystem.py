@@ -11,23 +11,20 @@ class OpticalSystem:
     def run(self, obj: Field|PolychromaticField, **kwargs) -> tuple[Field|PolychromaticField, list[Field|PolychromaticField]|None]:
         keep_history = kwargs.get('keep_history', False)
 
-        def apply_element(field:Field|PolychromaticField) -> Field|PolychromaticField:
-            current = elem.apply(field)
+        def apply_element(element:element_base, field:Field|PolychromaticField) -> Field|PolychromaticField:
+            current = element.apply(field)
             if keep_history:
-                if isinstance(current, Field):
-                    history.append(current.copy())
-                elif isinstance(current, PolychromaticField):
                     historyField = current.copy()
                     return current, historyField
-            return current
-        
-        if keep_history:
-            history = [obj.copy()]
+            return current, None
 
         if isinstance(obj, Field):
+            if keep_history:
+                history = [obj.copy()]
             current = obj.copy()
             for elem in self.elements:
-                current = apply_element(current)
+                current, hist = apply_element(elem, current)
+                if keep_history: history.append(hist)
             if keep_history:
                 return current, history
             return current, None
@@ -39,7 +36,7 @@ class OpticalSystem:
             for c,comp in enumerate(obj.components):
                 current = comp.field.copy()
                 for e, elem in enumerate(self.elements):
-                    current, hist = apply_element(current)
+                    current, hist = apply_element(elem, current)
                     if keep_history:
                         history_components[c, e] = (
                             SpectralComponent(

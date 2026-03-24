@@ -15,14 +15,14 @@ class Lens(element_base):
     """
     A thin lens element that applies a quadratic phase shift to the field. No chromatic aberration is included in this simple model, so the focal length is independent of wavelength.
     """
-    def __init__(self, f: float):
-        self.f = f
+    def __init__(self, f0: float):
+        self.f0 = f0
 
     def focal_length(self, wavelength: float) -> float:
             # For a simple thin lens, the focal length is independent of wavelength.
             # More complex lenses (e.g. diffractive lenses) could have wavelength-dependent focal lengths.
             # implement as new class if needed
-        return self.f
+        return self.f0
 
     def apply(self, field: Field) -> Field:
         g = field.grid
@@ -33,6 +33,40 @@ class Lens(element_base):
         out.Ex *= phase
         out.Ey *= phase
         return out
+    
+class ChromaticLens(Lens):
+    """
+    A lens with a wavelength-dependent focal length to model chromatic aberration. The focal length is defined by a simple dispersion relation, but can be modified to fit specific materials or designs.
+    """
+    def __init__(self, f0: float, dispersion):
+        super().__init__(f0)
+        self.dispersion = dispersion
+    
+    def focal_length(self, wavelength: float) -> float:
+        f = self.f0 * self.dispersion(wavelength)
+        return f
+
+    def apply(self, field:Field):
+        g = field.grid
+        f = self.focal_length(field.wavelength)
+        phase = np.exp(-1j * field.k * (g.X**2 + g.Y**2) / (2 * f))
+        out = field.copy()
+        out.Ex *= phase
+        out.Ey *= phase
+        return out
+    
+    @staticmethod
+    def linear_dispersion(f0: float, slope: float):
+        """
+        Creates a linear dispersion function for the chromatic lens. The focal length changes linearly with wavelength.
+
+        :param f0: focal length at the reference wavelength (in meters)
+        :param slope: rate of change of focal length with wavelength (in meters per meter)
+        :return: a function that takes wavelength as input and returns the focal length
+        """
+        def dispersion(wavelength: float) -> float:
+            return 1 + slope * (wavelength - 550e-9)  # 550 nm is a common reference wavelength
+        return dispersion
     
 class PhaseGrating:
     def __init__(

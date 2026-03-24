@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import numpy as np
+import numpy.typing as npt
 from .field import Field
 
 
@@ -11,8 +12,11 @@ class SpectralComponent:
 
 
 class PolychromaticField:
-    def __init__(self, components: list[SpectralComponent]):
-        if not components:
+    def __init__(self, components: list[SpectralComponent]|np.ndarray[SpectralComponent]):
+        if isinstance(components, list):
+            components = np.asarray(components)
+            
+        if not components.all():
             raise ValueError("components must not be empty")
 
         grid = components[0].field.grid
@@ -23,7 +27,7 @@ class PolychromaticField:
                 raise ValueError("Component wavelength and field wavelength must match.")
 
         self.grid = grid
-        self.components = list(components)
+        self.components:npt.NDArray  = components
 
     def copy(self) -> "PolychromaticField":
         return PolychromaticField([
@@ -51,12 +55,15 @@ class PolychromaticField:
         return float(sum(c.weight * c.field.power() for c in self.components))
     
     #visualization helper method to get RGB color for each component based on wavelength
-    def rgb_image(self, gamma: float = 1.0, normalize: bool = True) -> np.ndarray:
+    def rgb_image(self, gamma: float = 1.0, normalize: bool = True, max_saturation = False) -> np.ndarray:
         img = np.zeros((self.grid.N, self.grid.N, 3), dtype=float)
 
         for c in self.components:
             rgb = wavelength_to_rgb(c.wavelength * 1e9)
-            img += (c.weight * c.field.intensity())[..., None] * rgb[None, None, :]
+            if max_saturation:
+                img += (c.field.intensity())[..., None] * rgb[None, None, :]
+            else:
+                img += (c.weight * c.field.intensity())[..., None] * rgb[None, None, :]
 
         if normalize:
             max_val = img.max()
@@ -70,6 +77,13 @@ class PolychromaticField:
     
 
 def wavelength_to_rgb(wavelength_nm: float) -> np.ndarray:
+    """
+    Turns optical wavelength to rgb values (380-780 nm), [0,0,0] for non optical wavelengths.
+    
+    Parameters
+        :param wavelength_nm: Wavelength value in nm
+        :type wavelength_nm: float
+    """
     wl = float(wavelength_nm)
 
     if wl < 380 or wl > 780:
