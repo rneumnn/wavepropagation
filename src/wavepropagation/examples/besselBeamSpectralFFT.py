@@ -5,16 +5,7 @@ from wavepropagation.opticalSystem import OpticalSystem
 from wavepropagation.elements import *
 from wavepropagation.propagate import AngularSpectrumPropagate as Propagate
 import matplotlib.pyplot as plt
-import os
-import sys
 
-# print("cwd:", os.getcwd())
-# print("sys.executable:", sys.executable)
-# print("sys.path:", sys.path)
-
-print("__name__ =", __name__)
-print("__package__ =", __package__)
-print("__spec__ =", __spec__)
 def main():
     grid = Grid(N=1012, L=10e-3)
     spec = PolychromaticSource.SpectralUtils.gaussian_spectrum(center_wavelength=550e-9, fwhm=200e-9, num=15)
