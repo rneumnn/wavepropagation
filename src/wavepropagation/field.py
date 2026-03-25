@@ -1,9 +1,6 @@
 import numpy as np
 from .grid import Grid
-
-import numpy as np
-from .grid import Grid
-
+from .JonesCalculus import JonesVector
 
 class Field:
     def __init__(
@@ -48,6 +45,39 @@ class Field:
             self.Ex *= scale
             self.Ey *= scale
         return self
+
+    def jones_vector(self)->np.ndarray:
+        """
+        Calculates the Jones vectors based on the arrays Ex and Ey. Yields the Jones vector for each element of Ex,y.
+        """
+        vec = Field.calculate_jones_vector_from_fields(self.Ex, self.Ey)
+        jonesArray = np.asarray((self.Ex.shape), dtype=JonesVector)
+        for i, v in enumerate(vec[0]):
+            for j, h in enumerate(vec[1]):
+                jonesArray[i,j] = JonesVector(h,v)
+        return jonesArray
+
+    @staticmethod
+    def calculate_jones_vector_from_fields(Ex:complex|np.ndarray[np.complex128], Ey:complex|np.ndarray[np.complex128])->np.ndarray[np.complex128]:
+        """
+        Calculates the Jonesvector from two orthogonal based fields with arbetrary phase differences.
+         Ex = Ax * exp(ikz) *exp(i Phi_x)
+         Ey = Ay * exp(ikz) *exp(i Phi_y)
+         => dPhi_abs = im(Ex)/im(Ey) = exp(i [Phi_x-Phi_y])
+         => dPhi = dPhi_abs % 2 pi
+        So the Jones vector in |H>, |V> becomes 
+         Ax exp(i dPhi/2)|H> + Ay exp(i -dPhi/2)|V>
+        
+            :param Ex: Field of x-polarisation. Corresponds to |H> in ket notation of polarization states.
+            :type Ex: complex|np.ndarray[np.complex128]
+            :param Ey: Field of y-polarisation. Corresponds to |V> in keit notation of polarization states.
+            :type Ey: complex|np.ndarray[np.complex128]
+        """
+        dPhi_abs = Ex.imag/Ey.imag
+        dPhi = dPhi_abs % (2*np.pi)
+        vec = np.asarray([[Ex.real*np.exp((0+1j)*dPhi/2)],
+              [Ey.real*np.exp((0-1j)*dPhi/2)]], dtype=np.complex128)
+        return vec
 
     def __add__(self, other: "Field") -> "Field":
         if self.grid is not other.grid:
