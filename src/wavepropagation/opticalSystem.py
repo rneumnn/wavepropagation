@@ -61,3 +61,22 @@ class OpticalSystem:
             return PolychromaticField(out_components), None
 
         raise TypeError("Unsupported object type")
+    
+
+    class HistoryControl:
+        """
+        Class to controll the history treatment. Should be used to do complex evaluation/measurement methods.
+        Todo: integrate to field, refine the concept
+        """
+        def __init__(self):
+            self.history_index = [0]
+            self.history_name = ['source']
+            return
+        
+        def add_history_name(self, name:str|list[str]):
+            name = list(name)
+            self.history_name.extend(name)
+
+        def add_history_index(self, index:int|list[int]):
+            index = list(index)
+            self.history_name.extend(index)

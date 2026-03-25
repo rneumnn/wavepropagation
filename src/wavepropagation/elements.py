@@ -200,11 +200,29 @@ class Polarizer(element_base):
         return out
     
 class WavePlate(element_base):
+    """
+    Baseclass for generating Waveplates to shift polarization fields phases against each other
+    """
     def __init__(self, theta: float, retardance: float):
+        """
+        
+        Parameters
+            :param theta: Rotationangle of the waveplate towards horizontal
+            :type theta: _type_
+            :param retardance: 
+            :type retardance: _type_
+        """
         self.theta = theta
         self.retardance = retardance
 
     def apply(self, field: Field):
+        """
+        needs to be rechecked for the right formular!!!! do it when adding jones formalism to field!
+        Parameters
+            :param field: 
+            :type field: _type_
+        """
+
         c = np.cos(self.theta)
         s = np.sin(self.theta)
         e = np.exp(1j * self.retardance)
