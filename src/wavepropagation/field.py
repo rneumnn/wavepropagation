@@ -99,16 +99,7 @@ Notes
   wavelength, and refractive index.
 - The Jones-vector conversion assumes that the local polarization state can be
   be inferred from the relative amplitudes and phases of ``Ex`` and ``Ey``.
-
-Caution
--------
-The current implementation of ``calculate_jones_vector_from_fields`` derives
-the relative phase from the imaginary parts of ``Ex`` and ``Ey``. This is a
-specific convention and may not be robust for arbitrary field values, for
-example when one component has vanishing imaginary part. If high-accuracy
-polarization reconstruction is required, this method should be reviewed
-carefully against the intended physical model.
-"""
+  """
 
 import numpy as np
 from .grid import Grid
@@ -158,38 +149,119 @@ class Field:
             self.Ey *= scale
         return self
 
-    def jones_vector(self)->np.ndarray:
-        """
-        Calculates the Jones vectors based on the arrays Ex and Ey. Yields the Jones vector for each element of Ex,y.
-        """
-        vec = Field.calculate_jones_vector_from_fields(self.Ex, self.Ey)
-        jonesArray = np.asarray((self.Ex.shape), dtype=JonesVector)
-        for i, v in enumerate(vec[0]):
-            for j, h in enumerate(vec[1]):
-                jonesArray[i,j] = JonesVector(h,v)
-        return jonesArray
-
     @staticmethod
-    def calculate_jones_vector_from_fields(Ex:complex|np.ndarray[np.complex128], Ey:complex|np.ndarray[np.complex128])->np.ndarray[np.complex128]:
+    def calculate_jones_vector_from_fields(
+        Ex: complex | np.ndarray,
+        Ey: complex | np.ndarray,
+        normalize: bool = True,
+        remove_global_phase: bool = False,
+    ) -> np.ndarray:
         """
-        Calculates the Jonesvector from two orthogonal based fields with arbetrary phase differences.
-         Ex = Ax * exp(ikz) *exp(i Phi_x)
-         Ey = Ay * exp(ikz) *exp(i Phi_y)
-         => dPhi_abs = im(Ex)/im(Ey) = exp(i [Phi_x-Phi_y])
-         => dPhi = dPhi_abs % 2 pi
-        So the Jones vector in |H>, |V> becomes 
-         Ax exp(i dPhi/2)|H> + Ay exp(i -dPhi/2)|V>
-        
-            :param Ex: Field of x-polarisation. Corresponds to |H> in ket notation of polarization states.
-            :type Ex: complex|np.ndarray[np.complex128]
-            :param Ey: Field of y-polarisation. Corresponds to |V> in keit notation of polarization states.
-            :type Ey: complex|np.ndarray[np.complex128]
+        Construct local Jones vectors directly from the complex field components.
+
+        Parameters
+        ----------
+        Ex : complex or np.ndarray
+            Horizontal / x-polarized field component.
+        Ey : complex or np.ndarray
+            Vertical / y-polarized field component.
+        normalize : bool, default=True
+            If True, each local Jones vector is normalized to unit norm where possible.
+        remove_global_phase : bool, default=False
+            If True, remove the local global phase so that the first nonzero component
+            becomes real-valued.
+
+        Returns
+        -------
+        np.ndarray
+            Complex array of shape (2, ...) containing the Jones vectors:
+            vec[0] = Ex component, vec[1] = Ey component.
+
+        Notes
+        -----
+        The local Jones vector is defined directly by the complex field amplitudes
+
+            J ~ [Ex, Ey]^T
+
+        up to an arbitrary global phase. No phase reconstruction from imaginary
+        parts is needed.
         """
-        dPhi_abs = Ex.imag/Ey.imag
-        dPhi = dPhi_abs % (2*np.pi)
-        vec = np.asarray([[Ex.real*np.exp((0+1j)*dPhi/2)],
-              [Ey.real*np.exp((0-1j)*dPhi/2)]], dtype=np.complex128)
+        Ex = np.asarray(Ex, dtype=np.complex128)
+        Ey = np.asarray(Ey, dtype=np.complex128)
+
+        if Ex.shape != Ey.shape:
+            raise ValueError(f"Ex and Ey must have the same shape, got {Ex.shape} and {Ey.shape}")
+
+        vec = np.stack((Ex, Ey), axis=0)  # shape: (2, ...)
+
+        if normalize:
+            n = np.sqrt(np.abs(Ex)**2 + np.abs(Ey)**2)
+            mask = n > 0
+            vec[:, mask] /= n[mask]
+
+        if remove_global_phase:
+            ref = vec[0].copy()
+            phase = np.angle(ref)
+
+            use_second = np.abs(ref) == 0
+            if np.any(use_second):
+                phase[use_second] = np.angle(vec[1][use_second])
+
+            vec *= np.exp(-1j * phase)[None, ...]
+
         return vec
+
+    def jones_vector_array(
+        self,
+        normalize: bool = True,
+        remove_global_phase: bool = False,
+    ) -> np.ndarray:
+        """
+        Return the local Jones vectors as a complex NumPy array.
+
+        Parameters
+        ----------
+        normalize : bool, default=True
+            Normalize each local Jones vector to unit norm where possible.
+        remove_global_phase : bool, default=False
+            Remove local global phase if requested.
+
+        Returns
+        -------
+        np.ndarray
+            Array of shape (2, N, N), where:
+            - result[0, i, j] is the local |H> coefficient
+            - result[1, i, j] is the local |V> coefficient
+        """
+        return Field.calculate_jones_vector_from_fields(
+            self.Ex,
+            self.Ey,
+            normalize=normalize,
+            remove_global_phase=remove_global_phase,
+        )
+
+    def jones_vector(self) -> np.ndarray:
+        """
+        Return the local Jones vectors as an object array of JonesVector instances.
+
+        Returns
+        -------
+        np.ndarray
+            Object array of shape (N, N), each entry containing one JonesVector.
+
+        Notes
+        -----
+        This representation is convenient for inspection, but slower and less
+        useful for numerical work than `jones_vector_array()`.
+        """
+        vec = self.jones_vector_array(normalize=True, remove_global_phase=False)
+
+        out = np.empty(self.Ex.shape, dtype=object)
+        for i in range(self.Ex.shape[0]):
+            for j in range(self.Ex.shape[1]):
+                out[i, j] = JonesVector(vector=vec[:, i, j])
+
+        return out
 
     def __add__(self, other: "Field") -> "Field":
         if self.grid is not other.grid:
@@ -217,32 +289,44 @@ class Field:
 
     __rmul__ = __mul__
 
+
 # class Field:
-#     """
-#     A class representing the electric field of a wave in a 2D spatial grid.
-#     Fields are represented as complex-valued 2D arrays for the x and y components of the electric field, to handle polarization and phase information.
-
-#     Attributes:
-#     grid: Grid - The spatial grid on which the field is defined
-#     Ex: np.ndarray - 2D array of x-component of the electric field
-#     Ey: np.ndarray - 2D array of y-component of the electric field
-#     """
-#     def __init__(self, grid: Grid, Ex=None, Ey=None):
+#     def __init__(
+#         self,
+#         grid: Grid,
+#         wavelength: float,
+#         Ex=None,
+#         Ey=None,
+#         n_medium: float = 1.0,
+#     ):
 #         self.grid = grid
+#         self.wavelength = float(wavelength)
+#         self.n_medium = float(n_medium)
+
 #         shape = (grid.N, grid.N)
-#         self.Ex = np.zeros(shape, dtype=np.complex128) if Ex is None else Ex.astype(np.complex128)
-#         self.Ey = np.zeros(shape, dtype=np.complex128) if Ey is None else Ey.astype(np.complex128)
+#         self.Ex = np.zeros(shape, dtype=np.complex128) if Ex is None else np.asarray(Ex, dtype=np.complex128)
+#         self.Ey = np.zeros(shape, dtype=np.complex128) if Ey is None else np.asarray(Ey, dtype=np.complex128)
 
-#     def copy(self):
-#         return Field(self.grid, self.Ex.copy(), self.Ey.copy())
+#     @property
+#     def k(self) -> float:
+#         return 2 * np.pi * self.n_medium / self.wavelength
 
-#     def intensity(self):
+#     def copy(self) -> "Field":
+#         return Field(
+#             grid=self.grid,
+#             wavelength=self.wavelength,
+#             Ex=self.Ex.copy(),
+#             Ey=self.Ey.copy(),
+#             n_medium=self.n_medium,
+#         )
+
+#     def intensity(self) -> np.ndarray:
 #         return np.abs(self.Ex)**2 + np.abs(self.Ey)**2
 
-#     def power(self):
-#         return self.intensity().sum() * self.grid.dx**2
+#     def power(self) -> float:
+#         return float(np.sum(self.intensity()) * self.grid.dx**2)
 
-#     def normalize(self, power=1.0):
+#     def normalize(self, power: float = 1.0) -> "Field":
 #         p = self.power()
 #         if p > 0:
 #             scale = np.sqrt(power / p)
@@ -250,10 +334,56 @@ class Field:
 #             self.Ey *= scale
 #         return self
 
-#     def __add__(self, other:'Field'):
-#         return Field(self.grid, self.Ex + other.Ex, self.Ey + other.Ey)
+#     @staticmethod
+#     def calculate_jones_vector_from_fields(
+#         Ex: complex | np.ndarray,
+#         Ey: complex | np.ndarray,
+#         normalize: bool = True,
+#         remove_global_phase: bool = False,
+#     ) -> np.ndarray:
+        
+#         Ex = np.asarray(Ex, dtype=np.complex128)
+#         Ey = np.asarray(Ey, dtype=np.complex128)
 
-#     def __mul__(self, scalar):
-#         return Field(self.grid, scalar * self.Ex, scalar * self.Ey)
+#         vec = np.stack((Ex, Ey), axis=0)  # shape: (2, ...)
+
+#         if normalize:
+#             n = np.sqrt(np.abs(Ex)**2 + np.abs(Ey)**2)
+#             mask = n > 0
+#             vec[:, mask] /= n[mask]
+
+#         if remove_global_phase:
+#             ref = vec[0]
+#             use_y = np.abs(ref) == 0
+#             phase = np.angle(ref)
+#             phase[use_y] = np.angle(vec[1][use_y])
+#             vec *= np.exp(-1j * phase)[None, ...]
+
+#         return vec
+
+#     def __add__(self, other: "Field") -> "Field":
+#         if self.grid is not other.grid:
+#             raise ValueError("Fields must share the same Grid instance.")
+#         if self.wavelength != other.wavelength:
+#             raise ValueError("Only monochromatic fields with same wavelength can be added coherently.")
+#         if self.n_medium != other.n_medium:
+#             raise ValueError("Fields must have same refractive index.")
+#         return Field(
+#             grid=self.grid,
+#             wavelength=self.wavelength,
+#             n_medium=self.n_medium,
+#             Ex=self.Ex + other.Ex,
+#             Ey=self.Ey + other.Ey,
+#         )
+
+#     def __mul__(self, scalar: complex) -> "Field":
+#         return Field(
+#             grid=self.grid,
+#             wavelength=self.wavelength,
+#             n_medium=self.n_medium,
+#             Ex=scalar * self.Ex,
+#             Ey=scalar * self.Ey,
+#         )
 
 #     __rmul__ = __mul__
+
