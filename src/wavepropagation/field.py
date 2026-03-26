@@ -1,6 +1,6 @@
 import numpy as np
 from .grid import Grid
-from .JonesCalculus import JonesVector
+from .JonesCalculus import JonesVector, H, V, L, R
 
 class Field:
     def __init__(
