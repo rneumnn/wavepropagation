@@ -1,3 +1,79 @@
+"""
+Jones calculus utilities for polarization optics.
+
+This module provides a small set of tools for working with Jones vectors and
+Jones matrices in the linear polarization basis
+
+    |H> = [1, 0]^T
+    |V> = [0, 1]^T
+
+The implementation is based on NumPy arrays with dtype ``np.complex128`` and
+wraps them in two convenience classes:
+
+- ``JonesVector`` for polarization states
+- ``JonesMatrix`` for optical elements acting on polarization states
+
+The module also provides predefined basis states for linear and circular
+polarization, along with helper functions for validating and converting
+NumPy arrays to the expected internal shapes.
+
+Conventions
+-----------
+Vectors are represented as column vectors with shape ``(2, 1)``.
+Matrices are represented as 2x2 arrays with shape ``(2, 2)``.
+
+The operator ``*`` is intentionally overloaded for user convenience:
+
+For ``JonesVector``:
+- scalar * vector  -> scaled vector
+- vector * scalar  -> scaled vector
+- vector * vector  -> inner product <a|b>
+- matrix * vector  -> transformed vector
+
+For ``JonesMatrix``:
+- scalar * matrix  -> scaled matrix
+- matrix * scalar  -> scaled matrix
+- matrix * matrix  -> matrix product
+- matrix * vector  -> transformed vector
+
+This differs from standard NumPy conventions, where ``*`` usually denotes
+elementwise multiplication. The high ``__array_priority__`` values ensure
+that operations involving NumPy arrays prefer the Jones classes whenever
+possible.
+
+Notes
+-----
+- All numeric inputs are converted to ``np.complex128``.
+- Helper functions raise ``ValueError`` when shapes are incompatible.
+- ``DEBUG`` enables diagnostic output in selected helper functions.
+
+Examples
+--------
+Create basis vectors:
+
+>>> h = H()
+>>> v = V()
+>>> r = R()
+>>> l = L()
+
+Create a Jones vector directly:
+
+>>> psi = JonesVector(1, 1j)
+
+Apply a matrix:
+
+>>> qwp = JonesMatrix.quarter_wave_plate()
+>>> out = qwp * psi
+
+Compute an inner product:
+
+>>> overlap = H() * psi
+
+Build a Jones matrix:
+
+>>> m = JonesMatrix([[1, 0], [0, 1j]])
+>>> result = m * H()
+"""
 import numpy as np
 
 DEBUG = True

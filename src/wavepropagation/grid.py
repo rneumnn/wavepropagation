@@ -1,3 +1,117 @@
+"""
+Spatial grid definition for 2D wave and field simulations.
+
+This module defines the ``Grid`` class, which provides a structured 2D spatial
+domain along with its corresponding frequency (Fourier) domain representation.
+It is intended for use in numerical wave optics, Fourier optics, and field
+propagation simulations.
+
+The grid is square, uniformly sampled, and centered around zero. Both real-space
+and reciprocal-space (frequency / k-space) coordinates are precomputed for
+efficient use in simulations.
+
+Main concepts
+-------------
+The grid represents a square region of physical space:
+
+    - Size: L × L
+    - Resolution: N × N points
+    - Sampling interval: dx = L / N
+
+Coordinates are centered such that (0, 0) lies at the center of the grid.
+
+The class provides:
+
+- Cartesian coordinates (x, y, X, Y)
+- Polar coordinates (R, Phi)
+- Spatial frequency coordinates (FX, FY)
+- Wavevector coordinates (KX, KY)
+
+Class overview
+--------------
+Grid
+    A dataclass representing a 2D spatial grid with associated Fourier domain.
+
+Attributes
+----------
+N : int
+    Number of grid points per dimension (grid is N × N).
+
+L : float
+    Physical size of the grid (length of one side).
+
+dx : float
+    Spatial sampling interval, computed as L / N.
+
+x, y : np.ndarray
+    1D coordinate arrays for the spatial grid.
+
+X, Y : np.ndarray
+    2D meshgrid arrays representing Cartesian coordinates.
+
+R : np.ndarray
+    Radial distance from the grid center at each point.
+
+Phi : np.ndarray
+    Angular coordinate (polar angle) at each point, in radians.
+
+FX, FY : np.ndarray
+    Spatial frequency coordinates (cycles per unit length).
+
+KX, KY : np.ndarray
+    Wavevector coordinates (radians per unit length), defined as
+    K = 2πF.
+
+Coordinate systems
+------------------
+Real space:
+    (X, Y) define the Cartesian coordinate system.
+    (R, Phi) define the corresponding polar coordinate system.
+
+Frequency space:
+    (FX, FY) represent spatial frequencies as returned by ``np.fft.fftfreq``.
+    (KX, KY) represent angular spatial frequencies (wave numbers).
+
+Usage
+-----
+Create a grid:
+
+    grid = Grid(N=512, L=1e-3)
+
+Access spatial coordinates:
+
+    grid.X, grid.Y
+
+Access radial and angular coordinates:
+
+    grid.R, grid.Phi
+
+Access frequency domain:
+
+    grid.FX, grid.FY
+    grid.KX, grid.KY
+
+Typical applications
+--------------------
+- Fourier optics (FFT-based propagation)
+- Beam propagation methods
+- Spatial filtering in frequency domain
+- Simulation of optical fields (used together with the ``Field`` class)
+
+Notes
+-----
+- The grid is centered around zero using a symmetric coordinate definition.
+- The frequency grid follows NumPy's FFT convention.
+- The same spacing is used in both x and y directions.
+
+Caution
+-------
+- The grid does not store wavelength or refractive index; those belong to the
+  ``Field`` class.
+- Aliasing and sampling effects must be considered when choosing N and L for
+  physical simulations.
+"""
+
 import numpy as np
 from dataclasses import dataclass
 

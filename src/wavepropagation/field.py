@@ -1,3 +1,115 @@
+"""
+Field representation for monochromatic vectorial optical fields on a 2D grid.
+
+This module defines the ``Field`` class, which stores the complex transverse
+electric field components of a monochromatic optical wave on a square spatial
+grid. The field is represented by two complex-valued arrays,
+
+    Ex(x, y), Ey(x, y),
+
+corresponding to the horizontal and vertical polarization components at each
+grid point.
+
+The class is designed for numerical wave-optics simulations in which both
+spatial structure and polarization must be tracked. It supports basic field
+operations such as copying, intensity evaluation, total power calculation,
+normalization to a target power, coherent addition of fields, and scalar
+multiplication.
+
+In addition, the class provides utilities to convert the local field
+components at each grid point into Jones-vector representations, making it
+possible to connect spatial field simulations with Jones calculus for
+polarization analysis.
+
+Main concepts
+-------------
+- ``grid`` defines the spatial sampling and resolution of the field.
+- ``wavelength`` is the vacuum wavelength of the monochromatic field.
+- ``n_medium`` is the refractive index of the propagation medium.
+- ``Ex`` and ``Ey`` are 2D complex arrays describing the field amplitudes and
+  phases of the two transverse polarization components.
+
+Class overview
+--------------
+Field
+    Represents a monochromatic vector field on a square ``Grid`` with complex
+    x- and y-polarized components.
+
+Supported operations
+--------------------
+- Copying a field
+- Computing pointwise intensity
+- Computing total optical power
+- Normalizing the field to a given total power
+- Coherent addition of compatible fields
+- Scalar multiplication
+- Conversion of local field samples into Jones vectors
+
+Physical interpretation
+-----------------------
+At each grid point, the optical field is described by the complex amplitudes
+
+    Ex = Ax * exp(i phi_x)
+    Ey = Ay * exp(i phi_y)
+
+where ``Ax`` and ``Ay`` are the amplitudes of the horizontal and vertical
+components and ``phi_x``, ``phi_y`` are their phases. Together, these define
+the local polarization state, which can be expressed in Jones-vector form.
+
+Dependencies
+------------
+This module depends on:
+- ``numpy`` for numerical array handling
+- ``Grid`` from ``.grid`` for spatial discretization
+- ``JonesVector`` and basis states from ``.JonesCalculus`` for polarization
+  representations
+
+Typical usage
+-------------
+Create a field on a grid:
+
+    field = Field(grid=my_grid, wavelength=532e-9)
+
+Access intensity and power:
+
+    I = field.intensity()
+    P = field.power()
+
+Normalize the field to unit power:
+
+    field.normalize(power=1.0)
+
+Add two compatible fields coherently:
+
+    field_sum = field1 + field2
+
+Scale a field:
+
+    field_scaled = 0.5 * field
+
+Convert the local polarization state at each grid point to Jones vectors:
+
+    J = field.jones_vector()
+
+Notes
+-----
+- ``Ex`` and ``Ey`` are always stored as ``np.complex128`` arrays.
+- The field arrays are expected to have shape ``(grid.N, grid.N)``.
+- Coherent addition requires both fields to share the same grid instance,
+  wavelength, and refractive index.
+- The Jones-vector conversion assumes that the local polarization state can be
+  be inferred from the relative amplitudes and phases of ``Ex`` and ``Ey``.
+
+Caution
+-------
+The current implementation of ``calculate_jones_vector_from_fields`` derives
+the relative phase from the imaginary parts of ``Ex`` and ``Ey``. This is a
+specific convention and may not be robust for arbitrary field values, for
+example when one component has vanishing imaginary part. If high-accuracy
+polarization reconstruction is required, this method should be reviewed
+carefully against the intended physical model.
+"""
+
 import numpy as np
 from .grid import Grid
 from .JonesCalculus import JonesVector, H, V, L, R
