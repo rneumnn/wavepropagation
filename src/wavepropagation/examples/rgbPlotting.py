@@ -20,8 +20,8 @@ system = OpticalSystem([
     #ReliefPhaseGrating(period=200e-7, height=200e-9, n_grating=2.5, n_env=1.0, angle=0.0, profile='binary')
     CircularAperture(radius=100e-6),Propagate(0.1)
     ])
-f = system.run(poly_field)
-rgb = f.rgb_image(gamma=2.2)
+pf,_ = system.run(poly_field)
+rgb = pf.rgb_image(gamma=2.2)
 
 extent = [
     poly_field.grid.x[0] * 1e3,
