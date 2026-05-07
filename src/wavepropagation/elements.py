@@ -1,5 +1,6 @@
 from .field import Field
 import numpy as np
+from scipy.constants import c, pi
 
 class element_base:
     """
@@ -281,3 +282,62 @@ class ScalarMask(element_base):
 # vortex retarder, q-plate, etc.
 # arbitrary jones matrix, update waveplate implementation to use jones matrix instead of angle/retardance parameters
 
+class PulseFrontCurvature(element_base):
+    """
+    Imposes spatially varying spectral phase:
+
+        phi(x,y,omega) =
+            domega * tau(x,y)
+          + 0.5 * domega^2 * gdd(x,y)
+
+    with
+
+        tau(x,y) = PFTx*x + PFTy*y + PFC*(x^2 + y^2)
+
+    This models pulse front tilt and pulse front curvature.
+    """
+
+    def __init__(
+        self,
+        center_wavelength: float,
+        pfc: float = 0.0,
+        pft_x: float = 0.0,
+        pft_y: float = 0.0,
+        gdd_quadratic: float = 0.0,
+    ):
+        self.center_wavelength = center_wavelength
+        self.omega0 = 2 * np.pi * c / center_wavelength
+
+        # SI units:
+        # pfc: s/m^2
+        # pft_x, pft_y: s/m
+        # gdd_quadratic: s^2/m^2
+        self.pfc = pfc
+        self.pft_x = pft_x
+        self.pft_y = pft_y
+        self.gdd_quadratic = gdd_quadratic
+
+    def apply(self, field: Field) -> Field:
+        g = field.grid
+
+        omega = 2 * np.pi * c / field.wavelength
+        domega = omega - self.omega0
+
+        r2 = g.X**2 + g.Y**2
+
+        tau = (
+            self.pft_x * g.X
+            + self.pft_y * g.Y
+            + self.pfc * r2
+        )
+
+        gdd = self.gdd_quadratic * r2
+
+        phase = domega * tau + 0.5 * domega**2 * gdd
+
+        t = np.exp(1j * phase)
+
+        out = field.copy()
+        out.Ex *= t
+        out.Ey *= t
+        return out

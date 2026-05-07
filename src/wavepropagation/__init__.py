@@ -3,3 +3,4 @@ from .field import Field
 from .sources import *
 from .elements import *
 from .propagate import AngularSpectrumPropagate, FresnelPropagate
+from .spectrum import SpectralComponent, PolychromaticField

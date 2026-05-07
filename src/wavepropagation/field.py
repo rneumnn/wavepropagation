@@ -125,6 +125,18 @@ class Field:
     @property
     def k(self) -> float:
         return 2 * np.pi * self.n_medium / self.wavelength
+    
+    @property
+    def amplitude(self):
+        return np.sqrt(self.intensity())
+
+    @property
+    def phase_x(self):
+        return np.angle(self.Ex)
+
+    @property
+    def phase_y(self):
+        return np.angle(self.Ey)
 
     def copy(self) -> "Field":
         return Field(
@@ -289,101 +301,4 @@ class Field:
 
     __rmul__ = __mul__
 
-
-# class Field:
-#     def __init__(
-#         self,
-#         grid: Grid,
-#         wavelength: float,
-#         Ex=None,
-#         Ey=None,
-#         n_medium: float = 1.0,
-#     ):
-#         self.grid = grid
-#         self.wavelength = float(wavelength)
-#         self.n_medium = float(n_medium)
-
-#         shape = (grid.N, grid.N)
-#         self.Ex = np.zeros(shape, dtype=np.complex128) if Ex is None else np.asarray(Ex, dtype=np.complex128)
-#         self.Ey = np.zeros(shape, dtype=np.complex128) if Ey is None else np.asarray(Ey, dtype=np.complex128)
-
-#     @property
-#     def k(self) -> float:
-#         return 2 * np.pi * self.n_medium / self.wavelength
-
-#     def copy(self) -> "Field":
-#         return Field(
-#             grid=self.grid,
-#             wavelength=self.wavelength,
-#             Ex=self.Ex.copy(),
-#             Ey=self.Ey.copy(),
-#             n_medium=self.n_medium,
-#         )
-
-#     def intensity(self) -> np.ndarray:
-#         return np.abs(self.Ex)**2 + np.abs(self.Ey)**2
-
-#     def power(self) -> float:
-#         return float(np.sum(self.intensity()) * self.grid.dx**2)
-
-#     def normalize(self, power: float = 1.0) -> "Field":
-#         p = self.power()
-#         if p > 0:
-#             scale = np.sqrt(power / p)
-#             self.Ex *= scale
-#             self.Ey *= scale
-#         return self
-
-#     @staticmethod
-#     def calculate_jones_vector_from_fields(
-#         Ex: complex | np.ndarray,
-#         Ey: complex | np.ndarray,
-#         normalize: bool = True,
-#         remove_global_phase: bool = False,
-#     ) -> np.ndarray:
-        
-#         Ex = np.asarray(Ex, dtype=np.complex128)
-#         Ey = np.asarray(Ey, dtype=np.complex128)
-
-#         vec = np.stack((Ex, Ey), axis=0)  # shape: (2, ...)
-
-#         if normalize:
-#             n = np.sqrt(np.abs(Ex)**2 + np.abs(Ey)**2)
-#             mask = n > 0
-#             vec[:, mask] /= n[mask]
-
-#         if remove_global_phase:
-#             ref = vec[0]
-#             use_y = np.abs(ref) == 0
-#             phase = np.angle(ref)
-#             phase[use_y] = np.angle(vec[1][use_y])
-#             vec *= np.exp(-1j * phase)[None, ...]
-
-#         return vec
-
-#     def __add__(self, other: "Field") -> "Field":
-#         if self.grid is not other.grid:
-#             raise ValueError("Fields must share the same Grid instance.")
-#         if self.wavelength != other.wavelength:
-#             raise ValueError("Only monochromatic fields with same wavelength can be added coherently.")
-#         if self.n_medium != other.n_medium:
-#             raise ValueError("Fields must have same refractive index.")
-#         return Field(
-#             grid=self.grid,
-#             wavelength=self.wavelength,
-#             n_medium=self.n_medium,
-#             Ex=self.Ex + other.Ex,
-#             Ey=self.Ey + other.Ey,
-#         )
-
-#     def __mul__(self, scalar: complex) -> "Field":
-#         return Field(
-#             grid=self.grid,
-#             wavelength=self.wavelength,
-#             n_medium=self.n_medium,
-#             Ex=scalar * self.Ex,
-#             Ey=scalar * self.Ey,
-#         )
-
-#     __rmul__ = __mul__
 
