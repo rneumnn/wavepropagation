@@ -42,14 +42,18 @@ class OpticalSystem:
                             SpectralComponent(
                                 wavelength=comp.wavelength,
                                 weight=comp.weight,
-                                field=hist
+                                omega = comp.omega,
+                                field=hist,
+                                sampling_method=comp.sampling_method
                             )
                         )
                 out_components.append(
                     SpectralComponent(
                         wavelength=comp.wavelength,
                         weight=comp.weight,
+                        omega = comp.omega,
                         field=current,
+                        sampling_method=comp.sampling_method
                     )
                 )
             if keep_history:

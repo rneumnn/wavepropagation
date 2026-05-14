@@ -250,7 +250,7 @@ class ThickRealLens:
         R1: float,
         R2: float,
         center_thickness: float,
-        aperture_radius: float,
+        relative_aperture: float,
         n,
         n_environment=None,
         n_slices: int = 64,
@@ -271,8 +271,8 @@ class ThickRealLens:
         center_thickness:
             Lens center thickness [m].
 
-        aperture_radius:
-            Clear aperture radius [m].
+        relative_aperture:
+            Relative aperture (diameter of the aperture divided by the diameter of the grid).
 
         n:
             Lens refractive index.
@@ -289,7 +289,7 @@ class ThickRealLens:
         self.R1 = R1
         self.R2 = R2
         self.center_thickness = center_thickness
-        self.aperture_radius = aperture_radius
+        self.relative_aperture = relative_aperture
         self.n = n
         self.n_environment = n_environment
         self.n_slices = int(n_slices)
@@ -443,7 +443,7 @@ class ThickRealLens:
 
         z1, z2 = self.surfaces(field)
 
-        aperture = g.R <= self.aperture_radius
+        aperture = g.R <= g.R.max() * self.relative_aperture
         valid_surfaces = np.isfinite(z1) & np.isfinite(z2) & (z2 >= z1)
         valid = aperture & valid_surfaces
 

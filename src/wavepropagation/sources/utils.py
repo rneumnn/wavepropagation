@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.constants import c
 
 def calculate_kr_from_angle(wavelength: float, axicon_half_angle:float, n_axicon:float=1.6, n_medium:float=1.0) -> tuple[float, float]:
     """
@@ -26,3 +27,4 @@ def calculate_kr_from_angle(wavelength: float, axicon_half_angle:float, n_axicon
     kz = k * np.cos(theta)
     print(f"k = {k}; k_r = {kr}; k_z = {kz}")
     return kr, kz
+

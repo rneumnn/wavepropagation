@@ -2,8 +2,10 @@ from ..field import Field
 from ..grid import Grid
 from ..spectrum import SpectralComponent, PolychromaticField
 from .monochromaticSource import MonochromaticSource
+from .spectralUtils import Spectrum
 from ..materials import materials
 import numpy as np
+from scipy.constants import c
 
 
 class PolychromaticSource:
@@ -17,18 +19,23 @@ class PolychromaticSource:
     @staticmethod
     def polychromatic_gaussian_beam(
         grid: Grid,
-        wavelengths,
-        weights,
-        w0: float,
-        polarization=(1.0, 0.0),
+        from_spectrum: Spectrum|None = None,
+        wavelengths: list[float]|np.ndarray|None = None,
+        weights: list[float]|np.ndarray|None = None,
+        w0: float = None,
+        polarization: tuple[float] = (1.0, 0.0),
         n_medium: float = materials.AIR.n_function,
     ):
-        wavelengths = np.asarray(wavelengths, dtype=float)
-        weights = np.asarray(weights, dtype=float)
+        if from_spectrum is None:
+            wavelengths = np.asarray(wavelengths, dtype=float)
+            weights = np.asarray(weights, dtype=float)
 
-        if wavelengths.shape != weights.shape:
-            raise ValueError("wavelengths and weights must have same shape")
-
+            if wavelengths.shape != weights.shape:
+                raise ValueError("wavelengths and weights must have same shape")
+        else:
+            wavelengths = from_spectrum.wavelengths
+            weights = from_spectrum.weights_lambda
+            
         components = []
         for wl, wt in zip(wavelengths, weights):
             n_lambda = None
@@ -43,20 +50,34 @@ class PolychromaticSource:
                 polarization=polarization,
                 n_medium=n_lambda,
             )
-            components.append(
-                SpectralComponent(
-                    wavelength=float(wl),
-                    weight=float(wt),
-                    field=field,
+            if from_spectrum is None:
+                components.append(
+                    SpectralComponent(
+                        wavelength=float(wl),
+                        weight=float(wt),
+                        omega=np.pi*2*c/float(wl),
+                        field=field,
+                    )
                 )
-            )
+            else:
+                components.append(
+                    SpectralComponent(
+                        wavelength=float(wl),
+                        weight=float(wt),
+                        omega=np.pi*2*c/float(wl),
+                        field=field,
+                        sampling_method=from_spectrum.sampling_method
+                    )
+                )
+            
 
         return PolychromaticField(components)
     
     def polychromatic_bessel_beam(
         grid: Grid,
-        wavelengths,
-        weights,
+        from_spectrum: Spectrum|None = None,
+        wavelengths = None,
+        weights = None,
         kr: float|None = None,
         envelope_waist: float | None = None,
         polarization=(1.0, 0.0),
@@ -64,11 +85,15 @@ class PolychromaticSource:
         n_axicon: float = materials.FUSED_SILICA.n_function,
         axicon_half_angle: float|None = None
     ):
-        wavelengths = np.asarray(wavelengths, dtype=float)
-        weights = np.asarray(weights, dtype=float)
+        if from_spectrum is None:
+            wavelengths = np.asarray(wavelengths, dtype=float)
+            weights = np.asarray(weights, dtype=float)
 
-        if wavelengths.shape != weights.shape:
-            raise ValueError("wavelengths and weights must have same shape")
+            if wavelengths.shape != weights.shape:
+                raise ValueError("wavelengths and weights must have same shape")
+        else:
+            wavelengths = from_spectrum.wavelengths
+            weights = from_spectrum.weights_lambda
 
         components = []
         for wl, wt in zip(wavelengths, weights):
@@ -82,13 +107,25 @@ class PolychromaticSource:
                 n_axicon=n_axicon,
                 axicon_half_angle=axicon_half_angle
             )
-            components.append(
-                SpectralComponent(
-                    wavelength=float(wl),
-                    weight=float(wt),
-                    field=field,
+            if from_spectrum is None:
+                components.append(
+                    SpectralComponent(
+                        wavelength=float(wl),
+                        weight=float(wt),
+                        omega=np.pi*2*c/float(wl),
+                        field=field,
+                    )
                 )
-            )
+            else:
+                components.append(
+                    SpectralComponent(
+                        wavelength=float(wl),
+                        weight=float(wt),
+                        omega=np.pi*2*c/float(wl),
+                        field=field,
+                        sampling_method=from_spectrum.sampling_method
+                    )
+                )
 
         return PolychromaticField(components)
     

@@ -183,3 +183,7 @@ class Grid:
 
         self.KX = 2 * np.pi * self.FX
         self.KY = 2 * np.pi * self.FY
+
+    @property
+    def shape(self):
+        return self.X.shape

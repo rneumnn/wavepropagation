@@ -104,6 +104,7 @@ Notes
 import numpy as np
 from .grid import Grid
 from .JonesCalculus import JonesVector, H, V, L, R
+from scipy.constants import c
 
 class Field:
     def __init__(
@@ -130,8 +131,20 @@ class Field:
             self.spectral_phase = np.asarray(spectral_phase, dtype=float)
             
     @property
-    def k(self) -> float:
-        return 2 * np.pi * self.n_medium / self.wavelength
+    def omega(self):
+        return 2 * np.pi * c / self.wavelength
+
+    @property
+    def k0(self):
+        return 2 * np.pi / self.wavelength
+
+    @property
+    def k(self):
+        return self.n_medium * self.k0
+
+    @property
+    def wavelength_medium(self):
+        return self.wavelength / self.n_medium
     
     @property
     def amplitude(self):

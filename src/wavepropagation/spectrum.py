@@ -2,61 +2,121 @@ from dataclasses import dataclass
 import numpy as np
 import numpy.typing as npt
 from scipy.constants import c as c0
+from copy import copy
 
 from .field import Field
+from .grid import Grid
+from .sources.spectralUtils import Spectrum
 
 
 @dataclass
 class SpectralComponent:
-    wavelength: float
-    weight: float
-    field: Field
+    wavelength: float = None
+    weight: float = None  #weights are the same for lambdas and omegas
+    omega:float = None
+    field: Field = None
+    sampling_method: str = "unknown"
+    _possible_methods = Spectrum._possible_methods
 
+    def is_wavelength_sampled(self):
+        return self.sampling_method in ("gaussian_lambda",)
+    
+    def is_omega_sampled(self):
+        return self.sampling_method in ("gaussian_omega",)
+    
+    def is_unknown_sampled(self):
+        return self.sampling_method in ("unknown",)
+
+    def __post_init__(self):
+        if self.sampling_method not in SpectralComponent._possible_methods:
+            raise ValueError(f"sampling_method must be {SpectralComponent._possible_methods}")
+        if self.is_unknown_sampled():
+            raise Warning("Sampling method is unknown. This may lead to incorrect interpretation of weights.")
+        if self.field is None:
+            raise ValueError(f"Field must be given.")
+        if self.wavelength is None:
+            self.wavelength = self.field.wavelength
+            raise Warning("No wavelength given. Taking it from self.field.wavelength")
+        if self.omega is None:
+            self.omega = self.field.omega
+            raise Warning("No omega given. Using self.field.omega")
+        if self.weight is None:
+            raise ValueError("No weight is set for this Spectral Component")
+            
+    
+    def copy(self) -> "SpectralComponent":
+        return SpectralComponent(
+            wavelength=self.wavelength,
+            weight=self.weight,
+            omega=self.omega,
+            field=self.field.copy(),
+            sampling_method=self.sampling_method
+        )
+    
+    
 
 class PolychromaticField:
-    def __init__(self, components: list[SpectralComponent] | np.ndarray):
-        if isinstance(components, list):
-            components = np.asarray(components, dtype=object)
+    def __init__(self, components):
+        self.components:np.ndarray[SpectralComponent] = np.asarray(components, dtype=object)
 
-        if len(components) == 0:
+        if len(self.components) == 0:
             raise ValueError("components must not be empty")
 
-        grid = components[0].field.grid
+        self.grid:Grid = self.components[0].field.grid
 
-        for comp in components:
-            if comp.field.grid is not grid:
+        self._wavelengths = np.fromiter(
+            (comp.wavelength for comp in self.components),
+            dtype=float,
+            count=len(self.components),
+        )
+
+        self._weights = np.fromiter(
+            (comp.weight for comp in self.components),
+            dtype=float,
+            count=len(self.components),
+        )
+        self._omegas = 2 * np.pi * c0 / self._wavelengths
+        self._center_wavelength = float(np.average(self._wavelengths, weights=self._weights))
+        self._center_omega = 2 * np.pi * c0 / self._center_wavelength
+        self._center_index = int(np.argmin(np.abs(self._omegas - self._center_omega)))
+
+        for comp in self.components:
+            if comp.field.grid is not self.grid:
                 raise ValueError("All components must share the same Grid instance.")
-
             if not np.isclose(comp.field.wavelength, comp.wavelength):
                 raise ValueError("Component wavelength and field wavelength must match.")
-
             if comp.weight < 0:
                 raise ValueError("Spectral weights must be non-negative.")
+    
+    def copy(self)->"PolychromaticField":
+        out = PolychromaticField(
+            [c.copy() for c in self.components]
+        )
+        return out
 
-        self.grid = grid
-        self.components: npt.NDArray = components
-
-    def copy(self) -> "PolychromaticField":
-        return PolychromaticField([
-            SpectralComponent(
-                wavelength=comp.wavelength,
-                weight=comp.weight,
-                field=comp.field.copy(),
-            )
-            for comp in self.components
-        ])
-
+    @property
     def wavelengths(self) -> np.ndarray:
-        return np.array([comp.wavelength for comp in self.components], dtype=float)
+        return self._wavelengths
 
+    @property
     def weights(self) -> np.ndarray:
-        return np.array([comp.weight for comp in self.components], dtype=float)
+        return self._weights
+    
+    @property
+    def omegas(self) -> np.ndarray:
+        return self._omegas
 
+    @property
     def center_wavelength(self) -> float:
-        return float(np.average(self.wavelengths(), weights=self.weights()))
+        return self._center_wavelength
 
+    @property
     def center_omega(self) -> float:
-        return 2 * np.pi * c0 / self.center_wavelength()
+        return self._center_omega
+    
+    @property
+    def center_index(self) -> int:
+        return self._center_index
 
     def intensity(self) -> np.ndarray:
         """
@@ -77,56 +137,455 @@ class PolychromaticField:
 
     def normalize(self, power: float = 1.0) -> "PolychromaticField":
         current = self.total_power()
-
+        normalized_polychromaticField = self.copy()
         if current > 0:
             scale = np.sqrt(power / current)
-            for comp in self.components:
+            for comp in normalized_polychromaticField.components:
                 comp.field.Ex *= scale
                 comp.field.Ey *= scale
 
-        return self
+        return normalized_polychromaticField
+    
+    def spectral_phase_at_index(
+        self,
+        index: tuple[int, int],
+        centered: bool = False,
+        return_info: bool = False,
+    ):
+        """
+        Get spectral phase at one spatial index for all spectral components.
 
-    def spectral_phase_center(self, centered: bool = False) -> np.ndarray:
+        Parameters
+        ----------
+        index:
+            Spatial index as (iy, ix).
+
+        centered:
+            If True, subtract phase of the spectral component closest to center_omega.
+
+        return_info:
+            If True, also return diagnostic information.
+
+        Returns
+        -------
+        phases:
+            Shape (num_components,).
+
+        omegas:
+            Shape (num_components,).
+
+        weights:
+            Shape (num_components,).
+
+        info:
+            Optional dict with center index and center values.
+        """
+        iy, ix = index
+
+        if not (0 <= iy < self.grid.N):
+            raise IndexError(f"iy={iy} out of bounds for grid size {self.grid.N}")
+
+        if not (0 <= ix < self.grid.N):
+            raise IndexError(f"ix={ix} out of bounds for grid size {self.grid.N}")
+
+        omegas = self.omegas
+        wavelengths = self.wavelengths
+        weights = self.weights
+
+        phases = np.fromiter(
+            (comp.field.spectral_phase[iy, ix] for comp in self.components),
+            dtype=float,
+            count=len(self.components),
+        )
+
+        info = None
+
+        if centered:
+            center_idx = self.center_index
+            center_phase = phases[center_idx]
+            phases = phases - center_phase
+
+            if return_info:
+                info = {
+                    "center_index": center_idx,
+                    "center_wavelength": wavelengths[center_idx],
+                    "center_omega": omegas[center_idx],
+                    "center_phase": center_phase,
+                    "phase_min": float(phases.min()),
+                    "phase_max": float(phases.max()),
+                }
+
+        if return_info:
+            return phases, omegas, weights, info
+
+        return phases, omegas, weights
+
+    def spectral_phase_center(self, centered: bool = False) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Get the spectral phase at the center point for each spectral component.
+        Parameters
+        ----------
+        centered:
+            If True, the phase at the center wavelength is subtracted from all phases, so that the phase at the center wavelength is zero. This can be useful for analyzing dispersion effects without the overall phase offset.
+        Returns
+        -------
+        phases:
+            A 1D array containing the spectral phase at the center point (ix, iy) for each spectral component.
+        omegas:
+            A 1D array containing the angular frequencies corresponding to each spectral component.
+        """
         
         ix = self.grid.N // 2
         iy = self.grid.N // 2
 
-        wavelengths = np.array([comp.wavelength for comp in self.components])
-        omegas = 2 * np.pi * c0 / wavelengths
+        return self.spectral_phase_at_index((ix,iy), centered=centered)
+    
+    def spectral_phase_2D(self) -> np.ndarray:
+        """
+        Get the spectral phase at all points in the grid for each spectral component. This can be useful for analyzing spatially varying dispersion effects.
 
-        phases = np.array([
-           comp.field.spectral_phase[iy, ix] for comp in self.components
-        ])
-        if centered:
-            indx = np.argmin(np.abs(omegas-self.center_omega()))
-            print(f"Index: {indx}, Center wavelength: {self.center_wavelength()*1e9:.2f} nm, Center omega: {self.center_omega():.2e} rad/s, \nClosest component wavelength: {wavelengths[indx]*1e9:.2f} nm, Closest component omega: {omegas[indx]:.2e} rad/s")
-            print(f"Phase at center wavelength: {phases[indx]:.2f} rad, max phase: {phases.max():.2f} rad, min phase: {phases.min():.2f} rad")
-            phases = phases - phases[indx]
+        Returns
+        -------
+        phases:
+            A 3D array with shape (N, N, num_components) containing the spectral phase at each point in the grid for each spectral component.
+        omegas:
+            A 1D array containing the angular frequencies corresponding to each spectral component.
+        """
+        N = self.grid.N
+        num_components = len(self.components)
+        phases = np.zeros((N, N, num_components), dtype=float)
+        omegas = 2 * np.pi * c0 / self.wavelengths
+
+        for i, comp in enumerate(self.components):
+            phases[:, :, i] = comp.field.spectral_phase
+
         return phases, omegas
     
-    def fit_spectral_phase(self, order: int = 2) -> np.ndarray:
+    def fit_spectral_phase_1D(
+        self,
+        order: int = 2,
+        weights: np.ndarray | None = None,
+        center_omega: float | None = None,
+        scale_omega: float = 1e-15,
+        field_index = None
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Fit spectral phase in the fields center to a polynomial of given order. Returns the coefficients, omegas and phases used for fitting.
-        The polynomial is defined as:
-         phi(omega) = c0 + c1*(omega - omega0) + c2*(omega - omega0)^2 + ... + cn*(omega - omega0)^n
-        where omega0 is the center angular frequency of the spectrum.
+        Fit spectral phase at the field center to a polynomial.
+
+        The fitted polynomial is:
+
+            phi(omega) = c0
+                    + c1*(omega - omega0)
+                    + c2*(omega - omega0)^2
+                    + ...
+                    + cn*(omega - omega0)^n
 
         Parameters
         ----------
         order:
-            The order of the polynomial to fit. For example, order=2 will fit a quadratic function, which can capture group delay dispersion (GDD).
+            Polynomial order.
+
+        weights:
+            Optional spectral weights with shape (num_components,).
+            If given, performs a weighted least-squares fit.
+
+        center_omega:
+            Expansion angular frequency omega0 in rad/s.
+            If None, self.center_omega() is used.
+
+        scale_omega:
+            Internal scaling for numerical stability.
+            Default 1e-15 means the fit is performed in rad/fs,
+            then converted back to SI powers of rad/s.
+        
+        field_index:
+            Index [x,y] of the field where the phase should be fit.
+            If None the center of the array will be fitted.
+
         Returns
         -------
         coefficients:
-            The fitted polynomial coefficients, where coefficients[0] is the constant term, coefficients[1] is the linear term (group delay), coefficients[2] is the quadratic term (GDD), etc.
-        omegas:
-            The angular frequencies of the spectral components used for fitting.
+            Array with shape (order + 1,).
+
+            coefficients[0] = c0
+            coefficients[1] = c1 = group delay [s]
+            coefficients[2] = c2, with GDD = 2*c2 [s^2]
+            coefficients[3] = c3, with TOD = 6*c3 [s^3]
+
+        domega:
+            omega - omega0 in rad/s.
+
         phases:
-            The spectral phases of the components at the center point (ix, iy) used for fitting
+            Spectral phases used for fitting.
         """
-        phase, omegas = self.spectral_phase_center(centered=False)
-        coefficients = np.polyfit(omegas, phase, order)
-        return coefficients, omegas, phase
+        if field_index is None:
+            phase, omegas, weights = self.spectral_phase_center(centered=False)
+        else:
+            phase, omegas, weights = self.spectral_phase_at_index(field_index)
+        phase = np.asarray(phase, dtype=float)
+        omegas = np.asarray(omegas, dtype=float)
+
+        if center_omega is None:
+            center_omega = self.center_omega
+
+        if phase.shape[0] != omegas.shape[0]:
+            raise ValueError("phase and omegas must have the same length.")
+
+        idx = np.argsort(omegas)
+        omegas = omegas[idx]
+        phase = phase[idx]
+
+        domega = omegas - center_omega
+
+        # Scale omega for numerical conditioning:
+        # x is in rad/fs if scale_omega = 1e-15.
+        x = domega * scale_omega
+
+        if weights is not None:
+            weights = np.asarray(weights, dtype=float)
+
+            if weights.shape[0] != phase.shape[0]:
+                raise ValueError("weights must have the same length as phase.")
+
+            weights = weights[idx]
+
+            # np.polynomial.polynomial.polyfit expects weights w
+            # that multiply unsquared residuals, so use sqrt of
+            # physical least-squares weights.
+            fit_weights = np.sqrt(weights)
+
+            coeff_scaled = np.polynomial.polynomial.polyfit(
+                x,
+                phase,
+                deg=order,
+                w=fit_weights,
+            )
+        elif weights is not False:
+            coeff_scaled = np.polynomial.polynomial.polyfit(
+                x,
+                phase,
+                deg=order,
+                w = np.sqrt(self.weights)
+            )
+        else:
+            # No weights, just fit the phase values directly.
+            coeff_scaled = np.polynomial.polynomial.polyfit(
+                x,
+                phase,
+                deg=order,
+            )
+
+        # We fitted:
+        #   phase = b_m * (scale_omega * domega)^m
+        #
+        # Therefore:
+        #   c_m = b_m * scale_omega^m
+        powers = scale_omega ** np.arange(order + 1)
+        coefficients = coeff_scaled * powers
+
+        return coefficients, domega, phase
+        
+
+
+    def fit_spectral_phase_2D(
+        self,
+        order: int = 2,
+        weights: np.ndarray | None = None,
+        center_omega: float | None = None,
+        scale_omega: float = 1e-15,
+        return_polynomials: bool = True,
+    ):
+        """
+        Vectorized polynomial fit of spectral phase at every grid point.
+
+        Fits:
+
+            phi(omega) = c0
+                    + c1 * (omega - omega0)
+                    + c2 * (omega - omega0)^2
+                    + ...
+
+        The coefficient convention is the same as fit_spectral_phase_1D:
+
+            coefficients[..., 0] = c0
+            coefficients[..., 1] = c1 = group delay [s]
+            coefficients[..., 2] = c2, so GDD = 2*c2 [s^2]
+            coefficients[..., 3] = c3, so TOD = 6*c3 [s^3]
+
+        Parameters
+        ----------
+        order:
+            Polynomial order.
+
+        weights:
+            Optional spectral weights with shape (num_components,).
+            If given, performs a weighted least-squares fit.
+
+        center_omega:
+            Expansion angular frequency omega0 in rad/s.
+            If None, self.center_omega() is used.
+
+        scale_omega:
+            Internal numerical scaling.
+            Default 1e-15 means the fit is performed in rad/fs
+            and then converted back to SI powers of rad/s.
+
+        return_polynomials:
+            If True, also returns a 2D array of Polynomial objects.
+            Each polynomial expects input domega = omega - omega0 in rad/s.
+
+        Returns
+        -------
+        polynomials:
+            Object array with shape (N, N), if return_polynomials=True.
+            Each entry is a Polynomial object.
+
+        coefficients:
+            Float array with shape (N, N, order + 1).
+
+        domega:
+            Angular frequency offsets omega - omega0 in rad/s.
+
+        phases:
+            Spectral phases used for fitting, shape (N, N, num_components).
+        """
+        phases, omegas = self.spectral_phase_2D()
+
+        phases = np.asarray(phases, dtype=float)
+        omegas = np.asarray(omegas, dtype=float)
+
+        if center_omega is None:
+            center_omega = self.center_omega
+
+        if phases.ndim != 3:
+            raise ValueError("phases must have shape (N, N, num_components).")
+
+        if phases.shape[-1] != omegas.size:
+            raise ValueError(
+                "Last dimension of phases must match number of spectral components."
+            )
+
+        # Sort spectrum by omega.
+        idx = np.argsort(omegas)
+        omegas = omegas[idx]
+        phases = phases[..., idx]
+
+        domega = omegas - center_omega
+
+        # Internal scaled variable:
+        # x = domega in rad/fs if scale_omega = 1e-15.
+        x = domega * scale_omega
+
+        N0, N1, M = phases.shape
+
+        # Reshape spectral dimension first:
+        #
+        # phases: (N, N, M)
+        # Y:      (M, N*N)
+        Y = np.moveaxis(phases, -1, 0).reshape(M, -1)
+
+        # Vandermonde matrix in increasing powers:
+        #
+        # V[:, 0] = 1
+        # V[:, 1] = x
+        # V[:, 2] = x**2
+        # ...
+        V = np.polynomial.polynomial.polyvander(x, deg=order)
+
+        if weights is not None:
+            weights = np.asarray(weights, dtype=float)
+
+            if weights.shape[0] != M:
+                raise ValueError("weights must have shape (num_components,).")
+
+            weights = weights[idx]
+
+            if np.any(weights < 0):
+                raise ValueError("weights must be non-negative.")
+
+            sqrt_w = np.sqrt(weights)
+
+            V_fit = V * sqrt_w[:, None]
+            Y_fit = Y * sqrt_w[:, None]
+        elif weights is not False:
+            weights = self.weights[idx]
+            if np.any(weights < 0):
+                raise ValueError("weights must be non-negative.")
+
+            sqrt_w = np.sqrt(weights)
+
+            V_fit = V * sqrt_w[:, None]
+            Y_fit = Y * sqrt_w[:, None]
+        else:
+            V_fit = V
+            Y_fit = Y
+
+        # Solve all pixels at once.
+        #
+        # coeff_scaled shape:
+        #     (order + 1, N*N)
+        coeff_scaled, *_ = np.linalg.lstsq(V_fit, Y_fit, rcond=None)
+
+        # Convert from scaled variable back to SI.
+        #
+        # Fit was:
+        #     phi = b_m * (scale_omega * domega)^m
+        #
+        # Desired:
+        #     phi = c_m * domega^m
+        #
+        # Therefore:
+        #     c_m = b_m * scale_omega^m
+        powers = scale_omega ** np.arange(order + 1)
+        coeff_si = coeff_scaled * powers[:, None]
+
+        # Reshape to:
+        #     (N, N, order + 1)
+        coefficients = coeff_si.reshape(order + 1, N0, N1)
+        coefficients = np.moveaxis(coefficients, 0, -1)
+
+        if not return_polynomials:
+            return coefficients, domega, phases
+
+        # Build 2D object array of Polynomial objects.
+        #
+        # Each polynomial expects input:
+        #     domega = omega - omega0
+        # in rad/s.
+        polynomials = np.empty((N0, N1), dtype=object)
+
+        for i in range(N0):
+            for j in range(N1):
+                polynomials[i, j] = np.polynomial.Polynomial(coefficients[i, j, :])
+
+        return polynomials, coefficients, domega, phases
+
+
+    def get_phase_expansion(self, order: int = 3) -> np.ndarray:
+        """
+        Get the polynomial expansion of the spectral phase at the center point (ix, iy) up to a given order. This is useful for analyzing dispersion effects.
+
+        Parameters
+        ----------
+        order:
+            The order of the polynomial expansion. For example, order=2 will give you the constant term (overall phase), linear term (group delay), and quadratic term (GDD).
+        Returns
+        -------
+        expansion:
+            The polynomial expansion coefficients.
+            phi0: Overall phase (constant term)
+            group_delay: Group delay (first-order term)
+            gdd: Group delay dispersion (second-order term)
+            tod: Third-order dispersion (third-order term)
+        """
+        coefficients, _, _ = self.fit_spectral_phase_1D(order=order)
+        phi0 = coefficients[0]  # Overall phase
+        group_delay = coefficients[1]  # Group delay (first-order term)
+        gdd = 2*coefficients[2] if order >= 2 else 0.0  # GDD (second-order term)
+        tod = 6*coefficients[3] if order >= 3 else 0.0  # Third-order dispersion (third-order term)
+
+        return phi0, group_delay, gdd, tod
+
 
     def time_field(
         self,
@@ -151,7 +610,7 @@ class PolychromaticField:
         times = np.asarray(times, dtype=float)
 
         if center_wavelength is None:
-            center_wavelength = self.center_wavelength()
+            center_wavelength = self.center_wavelength
 
         omega0 = 2 * np.pi * c0 / center_wavelength
 
