@@ -112,16 +112,23 @@ class Field:
         wavelength: float,
         Ex=None,
         Ey=None,
-        n_medium: float = 1.0,
+        n_medium=1.0,
+        spectral_phase=None,
     ):
-        self.grid = grid
+        self.grid: Grid = grid
         self.wavelength = float(wavelength)
         self.n_medium = float(n_medium)
 
         shape = (grid.N, grid.N)
+
         self.Ex = np.zeros(shape, dtype=np.complex128) if Ex is None else np.asarray(Ex, dtype=np.complex128)
         self.Ey = np.zeros(shape, dtype=np.complex128) if Ey is None else np.asarray(Ey, dtype=np.complex128)
 
+        if spectral_phase is None:
+            self.spectral_phase = np.zeros(shape, dtype=float)
+        else:
+            self.spectral_phase = np.asarray(spectral_phase, dtype=float)
+            
     @property
     def k(self) -> float:
         return 2 * np.pi * self.n_medium / self.wavelength
@@ -138,15 +145,15 @@ class Field:
     def phase_y(self):
         return np.angle(self.Ey)
 
-    def copy(self) -> "Field":
+    def copy(self):
         return Field(
             grid=self.grid,
             wavelength=self.wavelength,
             Ex=self.Ex.copy(),
             Ey=self.Ey.copy(),
             n_medium=self.n_medium,
+            spectral_phase=self.spectral_phase.copy(),
         )
-
     def intensity(self) -> np.ndarray:
         return np.abs(self.Ex)**2 + np.abs(self.Ey)**2
 

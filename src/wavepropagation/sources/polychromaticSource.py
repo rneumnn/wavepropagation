@@ -2,6 +2,7 @@ from ..field import Field
 from ..grid import Grid
 from ..spectrum import SpectralComponent, PolychromaticField
 from .monochromaticSource import MonochromaticSource
+from ..materials import materials
 import numpy as np
 
 
@@ -20,7 +21,7 @@ class PolychromaticSource:
         weights,
         w0: float,
         polarization=(1.0, 0.0),
-        n_medium: float = 1.0,
+        n_medium: float = materials.AIR.n_function,
     ):
         wavelengths = np.asarray(wavelengths, dtype=float)
         weights = np.asarray(weights, dtype=float)
@@ -30,12 +31,17 @@ class PolychromaticSource:
 
         components = []
         for wl, wt in zip(wavelengths, weights):
+            n_lambda = None
+            if (type(n_medium) == float) or (type(n_medium) == int):
+                n_lambda = n_medium
+            else: #n_medium a function
+                n_lambda = n_medium(float(wl))
             field = MonochromaticSource.gaussian_beam(
                 grid=grid,
                 wavelength=float(wl),
                 w0=w0,
                 polarization=polarization,
-                n_medium=n_medium,
+                n_medium=n_lambda,
             )
             components.append(
                 SpectralComponent(
@@ -54,8 +60,8 @@ class PolychromaticSource:
         kr: float|None = None,
         envelope_waist: float | None = None,
         polarization=(1.0, 0.0),
-        n_medium: float = 1.0,
-        n_axicon: float = 1.6,
+        n_medium: float = materials.AIR.n_function,
+        n_axicon: float = materials.FUSED_SILICA.n_function,
         axicon_half_angle: float|None = None
     ):
         wavelengths = np.asarray(wavelengths, dtype=float)
@@ -85,3 +91,5 @@ class PolychromaticSource:
             )
 
         return PolychromaticField(components)
+    
+    

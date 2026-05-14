@@ -86,6 +86,48 @@ class PolychromaticField:
 
         return self
 
+    def spectral_phase_center(self, centered: bool = False) -> np.ndarray:
+        
+        ix = self.grid.N // 2
+        iy = self.grid.N // 2
+
+        wavelengths = np.array([comp.wavelength for comp in self.components])
+        omegas = 2 * np.pi * c0 / wavelengths
+
+        phases = np.array([
+           comp.field.spectral_phase[iy, ix] for comp in self.components
+        ])
+        if centered:
+            indx = np.argmin(np.abs(omegas-self.center_omega()))
+            print(f"Index: {indx}, Center wavelength: {self.center_wavelength()*1e9:.2f} nm, Center omega: {self.center_omega():.2e} rad/s, \nClosest component wavelength: {wavelengths[indx]*1e9:.2f} nm, Closest component omega: {omegas[indx]:.2e} rad/s")
+            print(f"Phase at center wavelength: {phases[indx]:.2f} rad, max phase: {phases.max():.2f} rad, min phase: {phases.min():.2f} rad")
+            phases = phases - phases[indx]
+        return phases, omegas
+    
+    def fit_spectral_phase(self, order: int = 2) -> np.ndarray:
+        """
+        Fit spectral phase in the fields center to a polynomial of given order. Returns the coefficients, omegas and phases used for fitting.
+        The polynomial is defined as:
+         phi(omega) = c0 + c1*(omega - omega0) + c2*(omega - omega0)^2 + ... + cn*(omega - omega0)^n
+        where omega0 is the center angular frequency of the spectrum.
+
+        Parameters
+        ----------
+        order:
+            The order of the polynomial to fit. For example, order=2 will fit a quadratic function, which can capture group delay dispersion (GDD).
+        Returns
+        -------
+        coefficients:
+            The fitted polynomial coefficients, where coefficients[0] is the constant term, coefficients[1] is the linear term (group delay), coefficients[2] is the quadratic term (GDD), etc.
+        omegas:
+            The angular frequencies of the spectral components used for fitting.
+        phases:
+            The spectral phases of the components at the center point (ix, iy) used for fitting
+        """
+        phase, omegas = self.spectral_phase_center(centered=False)
+        coefficients = np.polyfit(omegas, phase, order)
+        return coefficients, omegas, phase
+
     def time_field(
         self,
         times: np.ndarray,
@@ -118,18 +160,18 @@ class PolychromaticField:
 
         Ex_t = np.zeros((Nt, N, N), dtype=np.complex128)
         Ey_t = np.zeros((Nt, N, N), dtype=np.complex128)
-
+        print(f"Reconstructing time-domain field with {len(self.components)} spectral components...")
+        i = 1
         for comp in self.components:
+            print(f"Processing wavelength {comp.wavelength*1e9:.2f} nm with weight {comp.weight:.3f} ({i}/{len(self.components)})...")
             field = comp.field
-
             omega = 2 * np.pi * c0 / comp.wavelength
             domega = omega - omega0
-
             temporal_phase = np.exp(-1j * domega * times)[:, None, None]
             spectral_amplitude = np.sqrt(comp.weight)
-
             Ex_t += spectral_amplitude * field.Ex[None, :, :] * temporal_phase
             Ey_t += spectral_amplitude * field.Ey[None, :, :] * temporal_phase
+            i += 1
 
         return Ex_t, Ey_t
 
@@ -235,3 +277,15 @@ class PolychromaticField:
             img = np.clip(img, 0.0, 1.0) ** (1.0 / gamma)
 
         return np.clip(img, 0.0, 1.0)
+    
+    def plot_n_medium(self):
+        import matplotlib.pyplot as plt
+        wavelengths = self.wavelengths()
+        n_media = np.array([comp.field.n_medium for comp in self.components])
+        plt.figure()
+        plt.plot(wavelengths*1e9, n_media)
+        plt.xlabel("Wavelength (nm)")
+        plt.ylabel("Refractive Index")
+        plt.title("Refractive Index vs Wavelength")
+        plt.grid()
+        plt.show()
