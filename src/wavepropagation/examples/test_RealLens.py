@@ -10,22 +10,22 @@ import numpy as np
 w0 = 3e-3
 L = 10e-3
 #test on lens geometrie
-R1 = -20e-3
-R2 = 10e-3
+R1 = 20e-3
+R2 = -10e-3
 n = BK7.n_function
 thickness = 1e-3
 lens2 = ThinRealLens(R1=R1, R2=R2, n=n, center_thickness=thickness, relative_aperture=0.9)
 
-R1 = +50e-3      # first surface convex to incoming beam
+R1 = 50e-3      # first surface 
 R2 = -50e-3      # second surface convex to outgoing side
-center_thickness = 50e-3
+center_thickness = 5e-3
 aperture_radius = 2e-3
 lens = ThinRealLens(R1=R1, R2=R2, n=n, center_thickness=center_thickness, relative_aperture=aperture_radius*2/L)
 lens_real = ThickRealLens(R1=R1, R2=R2, n=n, center_thickness=center_thickness, relative_aperture=aperture_radius*2/L)
 print(f"Focal length: {lens.focal_length(wavelength=450e-9)*1e3:.2f} mm")
 
 #plot lens thickness function
-#lens.plot_thicknessfunction((-5e-3, 5e-3), (-5e-3, 5e-3))
+lens.plot_thicknessfunction((-L/2, L/2), (-L/2, L/2))
 
 
 #test on field
@@ -52,8 +52,8 @@ AFTER_LENS = hist[1]
 labels = ("lens", "z = " + str(1e-3) + " m", "z = " + str(101e-3) + " m")
 print(len(hist))
 fit1,_, omegas, phase_z1,_ = hist[0].fit_spectral_phase_1D(order=2)
-fit2,_,_, _, phase_z2,_ = hist[1].fit_spectral_phase_1D(order=2)
-fit3, _, phase_z3,_ = result.fit_spectral_phase_1D(order=2)
+fit2,_, _, phase_z2,_ = hist[1].fit_spectral_phase_1D(order=2)
+fit3,_,_, phase_z3,_ = result.fit_spectral_phase_1D(order=2)
 
 lin1 = np.polyval(fit1[-1:], omegas)
 lin2 = np.polyval(fit2[-1:], omegas)
@@ -89,23 +89,27 @@ print("GDD: ", phi_n[2]*1e30, " fs^2")
 fit = AFTER_LENS.fit_spectral_phase_2D(order = 3)
 
 ## calculate time field
-phi,_,omegas = AFTER_LENS.spectral_phase_center(centered=True)[0]
+phi= AFTER_LENS.spectral_phase_center(centered=True)[0]
 expansion,_ = AFTER_LENS.get_phase_expansion(2)
 print(f"Measured GD in pulse center = {expansion.GD:.2f}")
 times = np.linspace(-300e-15, 300e-15, 400)
 delta_t = 200e-15
 times_lab = times + expansion.GD
 times_scan = np.linspace(-0e-14, 500e-14, 400)
-E_t_init_x = field.time_intensity(times,field.center_wavelength)
-E_t_after_x = AFTER_LENS.time_intensity(times_lab,AFTER_LENS.center_wavelength)
-center = int(E_t_after_x.shape[0]/2)
-plt.figure()
-plt.plot(times*1e15, E_t_init_x[:,center,center], label ="initial Pulse")
-plt.plot(times*1e15, E_t_after_x[:,center,center], label ="pulse after lens")
-plt.xlabel("time /fs")
-plt.ylabel("Intensity ")
-plt.title("Pulsebroadening")
-plt.legend()
-plt.show()
+# E_t_init_x = field.time_intensity(times,field.center_wavelength)
+# E_t_after_x = AFTER_LENS.time_intensity(times_lab,AFTER_LENS.center_wavelength)
+# center = int(E_t_after_x.shape[0]/2)
+# plt.figure()
+# plt.plot(times*1e15, E_t_init_x[:,center,center], label ="initial Pulse")
+# plt.plot(times*1e15, E_t_after_x[:,center,center], label ="pulse after lens")
+# plt.xlabel("time /fs")
+# plt.ylabel("Intensity ")
+# plt.title("Pulsebroadening")
+# plt.legend()
+# plt.show()
 
 ## calculater pulsefront curvature
+fig, axs =plt.subplots(subplot_kw={"projection": "3d"})
+pf = AFTER_LENS.pulse_front(times_lab-100e-15, AFTER_LENS.center_wavelength)
+AFTER_LENS.plot_pulse_front_to_fig(pf,fig)
+plt.show()

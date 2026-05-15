@@ -7,6 +7,8 @@ from copy import copy
 from .field import Field
 from .grid import Grid
 from .sources.spectralUtils import Spectrum
+import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 
 @dataclass
 class PhaseExpansion:
@@ -710,7 +712,7 @@ class PolychromaticField:
         Ey_t = np.zeros((Nt, N, N), dtype=np.complex128)
 
         for i, comp in enumerate(self.components):
-            print(f"Processing component {i}/{len(self.components)} with wavelength {comp.wavelength:.2f} with weight{comp.weight:.3f}")
+            print(f"Processing component {i}/{len(self.components)} with wavelength {comp.wavelength:.2f} with weight {comp.weight:.3f}")
             field = comp.field
             omega = 2 * np.pi * c0 / comp.wavelength
             domega = omega - omega0
@@ -767,6 +769,17 @@ class PolychromaticField:
 
         peak_indices = np.argmax(I_t, axis=0)
         return times[peak_indices]
+    
+    def plot_pulse_front_to_fig(self, pulsefront_data, fig:Figure):
+        from matplotlib import cm
+        ax = fig.gca()
+        surf = ax.plot_surface(self.grid.X, self.grid.Y, pulsefront_data, cmap=cm.coolwarm,
+                       linewidth=0, antialiased=False)
+        plt.colorbar(surf)
+        ax.set_xlabel("X")
+        ax.set_ylabel("Y")
+        ax.set_zlabel("Peaktime /s")
+    
     
     @staticmethod
     def wavelength_to_rgb(wavelength_nm: float) -> np.ndarray: 
@@ -833,7 +846,6 @@ class PolychromaticField:
         return np.clip(img, 0.0, 1.0)
     
     def plot_n_medium(self):
-        import matplotlib.pyplot as plt
         wavelengths = self.wavelengths()
         n_media = np.array([comp.field.n_medium for comp in self.components])
         plt.figure()
