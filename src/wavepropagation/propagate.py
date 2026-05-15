@@ -23,7 +23,8 @@ class AngularSpectrumPropagate(Propagate_base):
         out.Ex = np.fft.ifft2(np.fft.fft2(field.Ex) * H)
         out.Ey = np.fft.ifft2(np.fft.fft2(field.Ey) * H)
         # Temporal spectral phase bookkeeping: on-axis propagation phase.
-        out.spectral_phase += field.k * self.z
+        out.spectral_phase_x += field.k * self.z
+        out.spectral_phase_y += field.k * self.z
         return out
     
 class FresnelPropagate(Propagate_base):
@@ -39,5 +40,6 @@ class FresnelPropagate(Propagate_base):
         out = field.copy()
         out.Ex = np.fft.ifft2(np.fft.fft2(field.Ex) * H)
         out.Ey = np.fft.ifft2(np.fft.fft2(field.Ey) * H)
-        out.spectral_phase += field.k * self.z
+        out.spectral_phase_x += field.k * self.z
+        out.spectral_phase_y += field.k * self.z
         return out

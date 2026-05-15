@@ -114,7 +114,8 @@ class Field:
         Ex=None,
         Ey=None,
         n_medium=1.0,
-        spectral_phase=None,
+        spectral_phase_x=None,
+        spectral_phase_y=None
     ):
         self.grid: Grid = grid
         self.wavelength = float(wavelength)
@@ -125,10 +126,15 @@ class Field:
         self.Ex = np.zeros(shape, dtype=np.complex128) if Ex is None else np.asarray(Ex, dtype=np.complex128)
         self.Ey = np.zeros(shape, dtype=np.complex128) if Ey is None else np.asarray(Ey, dtype=np.complex128)
 
-        if spectral_phase is None:
-            self.spectral_phase = np.zeros(shape, dtype=float)
+        if spectral_phase_x is None:
+            self.spectral_phase_x = np.zeros(shape, dtype=float)
         else:
-            self.spectral_phase = np.asarray(spectral_phase, dtype=float)
+            self.spectral_phase_x = np.asarray(spectral_phase_x, dtype=float)
+
+        if spectral_phase_y is None:
+            self.spectral_phase_y = np.zeros(shape, dtype=float)
+        else:
+            self.spectral_phase_y = np.asarray(spectral_phase_y, dtype=float)
             
     @property
     def omega(self):
@@ -165,7 +171,8 @@ class Field:
             Ex=self.Ex.copy(),
             Ey=self.Ey.copy(),
             n_medium=self.n_medium,
-            spectral_phase=self.spectral_phase.copy(),
+            spectral_phase_x=self.spectral_phase_x.copy(),
+            spectral_phase_y=self.spectral_phase_y.copy()
         )
     def intensity(self) -> np.ndarray:
         return np.abs(self.Ex)**2 + np.abs(self.Ey)**2

@@ -215,7 +215,8 @@ class ThinRealLens(element_base):
         out = field.copy()
         out.Ex *= np.exp(1j * phase)
         out.Ey *= np.exp(1j * phase)
-        out.spectral_phase += phase
+        out.spectral_phase_x += phase
+        out.spectral_phase_y += phase
         return out
     
 class ThickRealLens:
@@ -424,7 +425,8 @@ class ThickRealLens:
 
         # On-axis unwrapped phase bookkeeping.
         # This is not the full kx,ky-dependent angular-spectrum phase.
-        out.spectral_phase += k * dz
+        out.spectral_phase_x += k * dz
+        out.spectral_phase_y += k * dz
 
         # Keep field medium consistent after homogeneous propagation.
         out.n_medium = n_medium
@@ -505,8 +507,8 @@ class ThickRealLens:
             out.Ey *= transmission
 
             # Store unwrapped material excess phase.
-            out.spectral_phase += delta_phase
-
+            out.spectral_phase_x += delta_phase
+            out.spectral_phase_y += delta_phase
             # Second half-step propagation in surrounding medium
             out = self._propagate_homogeneous(out, dz / 2.0, n_env)
 
@@ -853,6 +855,6 @@ class PulseFrontCurvature(element_base):
             out.Ey *= np.exp(1j * phase)
 
             # unwrapped bookkeeping
-            out.spectral_phase += phase
-
+            out.spectral_phase_x += phase
+            out.spectral_phase_y += phase
             return out

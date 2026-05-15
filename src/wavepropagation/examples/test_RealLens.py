@@ -18,7 +18,7 @@ lens2 = ThinRealLens(R1=R1, R2=R2, n=n, center_thickness=thickness, relative_ape
 
 R1 = +50e-3      # first surface convex to incoming beam
 R2 = -50e-3      # second surface convex to outgoing side
-center_thickness = 5e-3
+center_thickness = 50e-3
 aperture_radius = 2e-3
 lens = ThinRealLens(R1=R1, R2=R2, n=n, center_thickness=center_thickness, relative_aperture=aperture_radius*2/L)
 lens_real = ThickRealLens(R1=R1, R2=R2, n=n, center_thickness=center_thickness, relative_aperture=aperture_radius*2/L)
@@ -51,20 +51,20 @@ AFTER_LENS = hist[1]
 #fits
 labels = ("lens", "z = " + str(1e-3) + " m", "z = " + str(101e-3) + " m")
 print(len(hist))
-fit1, omegas, phase_z1 = hist[0].fit_spectral_phase_1D(order=2)
-fit2, _, phase_z2 = hist[1].fit_spectral_phase_1D(order=2)
-fit3, _, phase_z3 = result.fit_spectral_phase_1D(order=2)
+fit1,_, omegas, phase_z1,_ = hist[0].fit_spectral_phase_1D(order=2)
+fit2,_,_, _, phase_z2,_ = hist[1].fit_spectral_phase_1D(order=2)
+fit3, _, phase_z3,_ = result.fit_spectral_phase_1D(order=2)
 
-lin1 = np.polyval(fit1[1:], omegas)
-lin2 = np.polyval(fit2[1:], omegas)
-lin3 = np.polyval(fit3[1:], omegas)
+lin1 = np.polyval(fit1[-1:], omegas)
+lin2 = np.polyval(fit2[-1:], omegas)
+lin3 = np.polyval(fit3[-1:], omegas)
 
 lin1_fit = np.polyfit(omegas, phase_z1, 1)
 lin2_fit = np.polyfit(omegas, phase_z2, 1)
 lin3_fit = np.polyfit(omegas, phase_z3, 1)
 
 
-phi_n = hist[1].get_phase_expansion(order=2)
+phi_n,_ = hist[1].get_phase_expansion(order=2)
 print(f"GD: {phi_n[1]*1e15:.2f} fs")
 print("GDD: ", phi_n[2]*1e30, " fs^2")
 
@@ -88,10 +88,24 @@ print("GDD: ", phi_n[2]*1e30, " fs^2")
 ## test phasefit 2d
 fit = AFTER_LENS.fit_spectral_phase_2D(order = 3)
 
-
-
 ## calculate time field
-# two ways. 1st: center phases bei doing phi(omega)=phi(omega)-GD(omega-omega0)
-phi = AFTER_LENS.spectral_phase_center(centered=True)[0]
+phi,_,omegas = AFTER_LENS.spectral_phase_center(centered=True)[0]
+expansion,_ = AFTER_LENS.get_phase_expansion(2)
+print(f"Measured GD in pulse center = {expansion.GD:.2f}")
+times = np.linspace(-300e-15, 300e-15, 400)
+delta_t = 200e-15
+times_lab = times + expansion.GD
+times_scan = np.linspace(-0e-14, 500e-14, 400)
+E_t_init_x = field.time_intensity(times,field.center_wavelength)
+E_t_after_x = AFTER_LENS.time_intensity(times_lab,AFTER_LENS.center_wavelength)
+center = int(E_t_after_x.shape[0]/2)
+plt.figure()
+plt.plot(times*1e15, E_t_init_x[:,center,center], label ="initial Pulse")
+plt.plot(times*1e15, E_t_after_x[:,center,center], label ="pulse after lens")
+plt.xlabel("time /fs")
+plt.ylabel("Intensity ")
+plt.title("Pulsebroadening")
+plt.legend()
+plt.show()
 
 ## calculater pulsefront curvature
