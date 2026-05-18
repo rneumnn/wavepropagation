@@ -149,8 +149,8 @@ class ThinRealLens(element_base):
             self.thickness_function = self.surfaceFunction
         else:
             #surfaces with curvature according to optical conventions, center of the surfaces are translated to z = 0
-            S1 = lambda x,y: (self.R1 - np.sign(self.R1) * np.sqrt(self.R1**2 - x**2 - y**2)) if self.R1 != 0 else 0
-            S2 = lambda x,y: (self.R2 - np.sign(self.R2) * np.sqrt(self.R2**2 - x**2 - y**2)) if self.R2 != 0 else 0
+            S1 = lambda x,y: (self.R1 - np.sign(self.R1) * np.sqrt(self.R1**2 - x**2 - y**2)) if self.R1 != 0 else (x+y)*0
+            S2 = lambda x,y: (self.R2 - np.sign(self.R2) * np.sqrt(self.R2**2 - x**2 - y**2)) if self.R2 != 0 else (x+y)*0
             #automatically clipping the surface when intersection occures
             t = lambda x,y: np.nan_to_num(np.clip(self.center_thickness - S1(x,y) + S2(x,y), 0, None))
             self.thickness_function = t

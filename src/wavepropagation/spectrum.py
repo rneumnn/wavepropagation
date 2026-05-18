@@ -96,6 +96,7 @@ class PolychromaticField:
         self._center_wavelength = float(np.average(self._wavelengths, weights=self._weights))
         self._center_omega = 2 * np.pi * c0 / self._center_wavelength
         self._center_index = int(np.argmin(np.abs(self._omegas - self._center_omega)))
+        self._time_fields = None #for now only current field is saved, later should contain a map z, E(t) for each position where a timefield was calculated
 
         for comp in self.components:
             if comp.field.grid is not self.grid:
@@ -134,6 +135,13 @@ class PolychromaticField:
     @property
     def center_index(self) -> int:
         return self._center_index
+    
+    @property
+    def time_field_zi(self) -> np.ndarray:
+        """
+        2 dim timefield a a specific position zi: E_zi(t,x,y)
+        """
+        return self._time_fields
 
     def intensity(self) -> np.ndarray:
         """
@@ -692,12 +700,16 @@ class PolychromaticField:
         return expansion_x, expansion_y
 
 
-    def time_field(
+    def calculate_time_field(
         self,
         times: np.ndarray,
         center_wavelength: float | None = None,
         use_spectral_phase: bool = True,
+        force_new_evaluation: bool = False
     ):
+        if (self.time_field_zi is not None) and not force_new_evaluation:
+            return self.time_field_zi
+        
         times = np.asarray(times, dtype=float)
 
         if center_wavelength is None:
@@ -712,7 +724,7 @@ class PolychromaticField:
         Ey_t = np.zeros((Nt, N, N), dtype=np.complex128)
 
         for i, comp in enumerate(self.components):
-            print(f"Processing component {i}/{len(self.components)} with wavelength {comp.wavelength:.2f} with weight {comp.weight:.3f}")
+            print(f"Processing component {i}/{len(self.components)} with wavelength {comp.wavelength*1e9:.2f} nm with weight {comp.weight:.3f}")
             field = comp.field
             omega = 2 * np.pi * c0 / comp.wavelength
             domega = omega - omega0
@@ -734,7 +746,7 @@ class PolychromaticField:
 
             Ex_t += amp * Ex_spec[None, :, :] * temporal
             Ey_t += amp * Ey_spec[None, :, :] * temporal
-
+        self.time_field_zi
         return Ex_t, Ey_t
         
     def time_intensity(
@@ -742,11 +754,13 @@ class PolychromaticField:
         times: np.ndarray,
         center_wavelength: float | None = None,
         use_spectral_phase: bool = True,
+        force_new_evaluation: bool = False
     ):
-        Ex_t, Ey_t = self.time_field(
+        Ex_t, Ey_t = self.calculate_time_field(
             times=times,
             center_wavelength=center_wavelength,
             use_spectral_phase=use_spectral_phase,
+            force_new_evaluation=force_new_evaluation
         )
 
         return np.abs(Ex_t)**2 + np.abs(Ey_t)**2
@@ -755,6 +769,7 @@ class PolychromaticField:
         self,
         times: np.ndarray,
         center_wavelength: float | None = None,
+        force_new_evaluation:bool = False
     ) -> np.ndarray:
         """
         Estimate pulse arrival time t_peak(x,y) from max I(x,y,t).
@@ -765,10 +780,111 @@ class PolychromaticField:
         I_t = self.time_intensity(
             times=times,
             center_wavelength=center_wavelength,
+            force_new_evaluation=force_new_evaluation
         )
 
         peak_indices = np.argmax(I_t, axis=0)
         return times[peak_indices]
+    
+    import numpy as np
+
+    @staticmethod
+    def fit_pulse_front(
+        pulse_front: np.ndarray,
+        X: np.ndarray,
+        Y: np.ndarray,
+        mask: np.ndarray | None = None,
+    ) -> dict:
+        """
+        Fit pulse front with:
+
+            PF(x,y) = C + PFT_x*x + PFT_y*y + PFC*(x^2 + y^2)
+
+        Parameters
+        ----------
+        pulse_front:
+            2D pulse-front delay array, usually in seconds.
+
+        X, Y:
+            2D coordinate arrays in meters, usually grid.X and grid.Y.
+
+        mask:
+            Optional boolean mask. True values are included in the fit.
+            Useful for fitting only inside the beam/aperture.
+
+        Returns
+        -------
+        result:
+            Dictionary containing:
+                C:
+                    Constant delay offset [same unit as pulse_front]
+
+                PFT_x:
+                    Pulse-front tilt in x [pulse_front unit / m]
+
+                PFT_y:
+                    Pulse-front tilt in y [pulse_front unit / m]
+
+                PFC:
+                    Pulse-front curvature [pulse_front unit / m^2]
+
+                fitted:
+                    Fitted 2D pulse-front array
+
+                residual:
+                    pulse_front - fitted
+
+                coefficients:
+                    Array [C, PFT_x, PFT_y, PFC]
+        """
+        pulse_front = np.asarray(pulse_front, dtype=float)
+        X = np.asarray(X, dtype=float)
+        Y = np.asarray(Y, dtype=float)
+
+        if pulse_front.shape != X.shape or pulse_front.shape != Y.shape:
+            raise ValueError("pulse_front, X, and Y must have the same shape.")
+
+        if mask is None:
+            valid = np.isfinite(pulse_front) & np.isfinite(X) & np.isfinite(Y)
+        else:
+            mask = np.asarray(mask, dtype=bool)
+            if mask.shape != pulse_front.shape:
+                raise ValueError("mask must have the same shape as pulse_front.")
+            valid = mask & np.isfinite(pulse_front) & np.isfinite(X) & np.isfinite(Y)
+
+        x = X[valid]
+        y = Y[valid]
+        pf = pulse_front[valid]
+
+        if pf.size < 4:
+            raise ValueError("Need at least 4 valid points to fit pulse front.")
+
+        A = np.column_stack([
+            np.ones_like(x),
+            x,
+            y,
+            x**2 + y**2,
+        ])
+
+        coeffs, residuals, rank, singular_values = np.linalg.lstsq(A, pf, rcond=None)
+
+        C, PFT_x, PFT_y, PFC = coeffs
+
+        fitted = C + PFT_x * X + PFT_y * Y + PFC * (X**2 + Y**2)
+        residual = pulse_front - fitted
+
+        return {
+            "C": C,
+            "PFT_x": PFT_x,
+            "PFT_y": PFT_y,
+            "PFC": PFC,
+            "fitted": fitted,
+            "residual": residual,
+            "coefficients": coeffs,
+            "rank": rank,
+            "singular_values": singular_values,
+        }
+        
     
     def plot_pulse_front_to_fig(self, pulsefront_data, fig:Figure):
         from matplotlib import cm
