@@ -786,7 +786,177 @@ class PolychromaticField:
         peak_indices = np.argmax(I_t, axis=0)
         return times[peak_indices]
     
-    import numpy as np
+    #memory efficient calculations:
+    def pulse_front_streaming(
+        self,
+        times: np.ndarray,
+        center_wavelength: float | None = None,
+        use_spectral_phase: bool = True,
+        threshold: float = 0.01,
+        dtype=np.complex64,
+    ):
+        """
+        Compute pulse front t_peak(y,x) without storing I(t,y,x).
+
+        This is memory efficient. It loops over time and keeps only the
+        current maximum intensity and its time.
+
+        Returns
+        -------
+        t_peak:
+            shape (N, N), seconds. Invalid low-intensity pixels are NaN.
+
+        I_max:
+            maximum intensity map.
+        """
+        times = np.asarray(times, dtype=float)
+
+        if center_wavelength is None:
+            center_wavelength = self.center_wavelength
+
+        omega0 = 2 * np.pi * c0 / center_wavelength
+
+        N = self.grid.N
+
+        I_max = np.full((N, N), -np.inf, dtype=np.float32)
+        t_peak = np.full((N, N), np.nan, dtype=np.float64)
+
+        # Precompute spectral fields and domegas.
+        spectral_data = []
+
+        for comp in self.components:
+            field = comp.field
+            omega = 2 * np.pi * c0 / comp.wavelength
+            domega = omega - omega0
+
+            amp = np.sqrt(comp.weight)
+
+            if use_spectral_phase:
+                Ex_spec = np.abs(field.Ex) * np.exp(1j * field.spectral_phase_x)
+                Ey_spec = np.abs(field.Ey) * np.exp(1j * field.spectral_phase_y)
+            else:
+                Ex_spec = field.Ex
+                Ey_spec = field.Ey
+
+            spectral_data.append((
+                domega,
+                (amp * Ex_spec).astype(dtype, copy=False),
+                (amp * Ey_spec).astype(dtype, copy=False),
+            ))
+
+        for t in times:
+            Ex_t = np.zeros((N, N), dtype=dtype)
+            Ey_t = np.zeros((N, N), dtype=dtype)
+
+            for domega, Ex_spec, Ey_spec in spectral_data:
+                phase_t = np.exp(-1j * domega * t).astype(dtype)
+                Ex_t += Ex_spec * phase_t
+                Ey_t += Ey_spec * phase_t
+
+            I = (np.abs(Ex_t) ** 2 + np.abs(Ey_t) ** 2).astype(np.float32)
+
+            update = I > I_max
+            I_max[update] = I[update]
+            t_peak[update] = t
+
+        # mask pixels where there is no meaningful pulse
+        valid = I_max > threshold * np.nanmax(I_max)
+        t_peak[~valid] = np.nan
+
+        return t_peak, I_max
+
+    def pulse_front_streaming_downsampled(
+        self,
+        times: np.ndarray,
+        center_wavelength: float | None = None,
+        N_out: int = 128,
+        use_spectral_phase: bool = True,
+        threshold: float = 0.01,
+        dtype=np.complex64,
+    ):
+        """
+        Memory-efficient pulse front on a downsampled spatial grid.
+
+        Returns
+        -------
+        t_peak:
+            shape (N_out, N_out)
+
+        I_max:
+            shape (N_out, N_out)
+
+        X_out, Y_out:
+            coordinate grids, shape (N_out, N_out)
+        """
+        times = np.asarray(times, dtype=float)
+
+        if center_wavelength is None:
+            center_wavelength = self.center_wavelength
+
+        omega0 = 2 * np.pi * c0 / center_wavelength
+
+        N = self.grid.N
+
+        if N_out > N:
+            raise ValueError("N_out must be <= grid.N")
+
+        # choose evenly spaced indices
+        y_idx = np.linspace(0, N - 1, N_out).astype(int)
+        x_idx = np.linspace(0, N - 1, N_out).astype(int)
+
+        X_out = self.grid.X[np.ix_(y_idx, x_idx)]
+        Y_out = self.grid.Y[np.ix_(y_idx, x_idx)]
+
+        I_max = np.full((N_out, N_out), -np.inf, dtype=np.float32)
+        t_peak = np.full((N_out, N_out), np.nan, dtype=np.float64)
+
+        spectral_data = []
+
+        for comp in self.components:
+            field = comp.field
+            omega = 2 * np.pi * c0 / comp.wavelength
+            domega = omega - omega0
+
+            amp = np.sqrt(comp.weight)
+
+            if use_spectral_phase:
+                Ex_spec = (
+                    np.abs(field.Ex[np.ix_(y_idx, x_idx)])
+                    * np.exp(1j * field.spectral_phase_x[np.ix_(y_idx, x_idx)])
+                )
+                Ey_spec = (
+                    np.abs(field.Ey[np.ix_(y_idx, x_idx)])
+                    * np.exp(1j * field.spectral_phase_y[np.ix_(y_idx, x_idx)])
+                )
+            else:
+                Ex_spec = field.Ex[np.ix_(y_idx, x_idx)]
+                Ey_spec = field.Ey[np.ix_(y_idx, x_idx)]
+
+            spectral_data.append((
+                domega,
+                (amp * Ex_spec).astype(dtype, copy=False),
+                (amp * Ey_spec).astype(dtype, copy=False),
+            ))
+
+        for t in times:
+            Ex_t = np.zeros((N_out, N_out), dtype=dtype)
+            Ey_t = np.zeros((N_out, N_out), dtype=dtype)
+
+            for domega, Ex_spec, Ey_spec in spectral_data:
+                phase_t = np.exp(-1j * domega * t).astype(dtype)
+                Ex_t += Ex_spec * phase_t
+                Ey_t += Ey_spec * phase_t
+
+            I = (np.abs(Ex_t) ** 2 + np.abs(Ey_t) ** 2).astype(np.float32)
+
+            update = I > I_max
+            I_max[update] = I[update]
+            t_peak[update] = t
+
+        valid = I_max > threshold * np.nanmax(I_max)
+        t_peak[~valid] = np.nan
+
+        return t_peak, I_max, X_out, Y_out
 
     @staticmethod
     def fit_pulse_front(
@@ -890,7 +1060,7 @@ class PolychromaticField:
         from matplotlib import cm
         ax = fig.gca()
         surf = ax.plot_surface(self.grid.X, self.grid.Y, pulsefront_data, cmap=cm.coolwarm,
-                       linewidth=0, antialiased=False)
+                       linewidth=0, antialiased=False, alpha=0.5)
         plt.colorbar(surf)
         ax.set_xlabel("X")
         ax.set_ylabel("Y")
@@ -950,6 +1120,88 @@ class PolychromaticField:
                 img += comp.field.intensity()[..., None] * rgb[None, None, :]
             else:
                 img += (comp.weight * comp.field.intensity())[..., None] * rgb[None, None, :]
+
+        if normalize:
+            max_val = img.max()
+            if max_val > 0:
+                img /= max_val
+
+        if gamma != 1.0:
+            img = np.clip(img, 0.0, 1.0) ** (1.0 / gamma)
+
+        return np.clip(img, 0.0, 1.0)
+
+
+    @staticmethod
+    def wavelength_to_falsecolor(
+        wavelength_nm: float,
+        wavelength_min_nm: float = 380.0,
+        wavelength_max_nm: float = 780.0,
+        cmap: str = "turbo",
+        outside_color: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> np.ndarray:
+        """
+        Map wavelength to false-color RGB using a Matplotlib colormap.
+
+        Parameters
+        ----------
+        wavelength_nm:
+            Wavelength in nm.
+
+        wavelength_min_nm:
+            Lower wavelength bound mapped to cmap value 0.
+
+        wavelength_max_nm:
+            Upper wavelength bound mapped to cmap value 1.
+
+        cmap:
+            Matplotlib colormap name, e.g.:
+            "turbo", "viridis", "plasma", "inferno", "magma", "jet".
+
+        outside_color:
+            RGB color returned for wavelengths outside the range.
+
+        Returns
+        -------
+        rgb:
+            RGB array with values in [0, 1].
+        """
+        wl = float(wavelength_nm)
+
+        if wl < wavelength_min_nm or wl > wavelength_max_nm:
+            return np.array(outside_color, dtype=float)
+
+        if wavelength_max_nm <= wavelength_min_nm:
+            raise ValueError("wavelength_max_nm must be larger than wavelength_min_nm.")
+
+        x = (wl - wavelength_min_nm) / (wavelength_max_nm - wavelength_min_nm)
+
+        rgba = plt.get_cmap(cmap)(x)
+        rgb = np.array(rgba[:3], dtype=float)
+
+        return np.clip(rgb, 0.0, 1.0)
+    
+    def false_color_image(
+        self,
+        gamma: float = 1.0,
+        normalize: bool = True,
+        max_saturation: bool = False,
+        cmap: str = "turbo"
+    ) -> np.ndarray:
+        img = np.zeros((self.grid.N, self.grid.N, 3), dtype=float)
+
+        for comp in self.components:
+            color = self.wavelength_to_falsecolor(
+                wavelength_nm=comp.wavelength,
+                wavelength_min_nm=self.wavelengths.min(),
+                wavelength_max_nm=self.wavelengths.max(),
+                cmap=cmap
+            )
+
+            if max_saturation:
+                img += comp.field.normalize().intensity()[..., None] * color[None, None, :]
+            else:
+                img += (comp.weight * comp.field.normalize().intensity())[..., None] * color[None, None, :]
 
         if normalize:
             max_val = img.max()

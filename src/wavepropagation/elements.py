@@ -8,6 +8,7 @@ class element_base:
     """
     Base class for optical elements. Subclasses should implement the apply method.
     """
+    debug = True
     def __init__(self):
         return
 
@@ -110,6 +111,27 @@ class ThinRealLens(element_base):
         else:
             self._calculate_thicknessfunction()
 
+    def lens_phase_sampling_check(self, field:Field, safety = 1.0):
+        """ 
+        Checks the phase sampling of the lens phase to ensure that it is adequately sampled to avoid artifacts.
+        It calculates the maximum phase step across the lens and compares it to the Nyquist limit (pi radians) and a user-defined safety factor.
+        If the maximum phase step exceeds pi, it indicates that the phase is undersampled and may lead to artifacts in the propagated field.
+        If it exceeds the safety factor but is less than pi, it is borderline and may show some artifacts. 
+        If it is below the safety factor, the sampling is considered good.
+
+        Parameters
+        ----------
+        field: Field - The input field for which the lens phase is being applied. This is used to calculate the material phase shift and the required sampling factor.
+        safety: float - A user-defined safety factor for phase sampling. A value of 1.0 means that the maximum phase step should be less than pi radians. A value less than 1.0 is more conservative, while a value greater than 1.0 allows for more aggressive sampling.
+
+        Returns
+        -------
+        factor_needed: float - The factor by which the grid size of the input field should be increased to achieve adequate phase sampling based on the maximum phase step.
+        """
+        from.analyzing import phase_sampling_requirement
+        factor_needed = phase_sampling_requirement(self.calculate_material_phase(field)[0], safety=safety)
+        return factor_needed
+
     def focal_length(self, wavelength: float) -> float:
         n_lens = self.n(wavelength) if callable(self.n) else self.n
         n_env = self.n_environment(wavelength) if callable(self.n_environment) else self.n_environment
@@ -187,7 +209,8 @@ class ThinRealLens(element_base):
         x = np.linspace(*x_range, 200)
         y = np.linspace(*y_range, 200)
         X, Y = np.meshgrid(x, y)
-        Z = self.thickness_function(X, Y)
+        aperture = np.where(np.sqrt((np.power(X,2)+np.power(Y,2)))/np.sqrt((np.max(X)**2+np.max(Y)**2))<=self.aperture, 1, 0)
+        Z = self.thickness_function(X, Y)*aperture
 
         p1 = axs[0].contourf(X * 1e3, Y * 1e3, Z * 1e3, levels=250, cmap='viridis')
         plt.colorbar(p1, label='Thickness (mm)')
@@ -208,13 +231,13 @@ class ThinRealLens(element_base):
 
     def apply(self, field: Field) -> Field:
         self.n_environment = field.n_medium
-        g = field.grid
-        f = self.focal_length(field.wavelength)
+        #f = self.focal_length(field.wavelength)
         phase_lens, phase_environment = self.calculate_material_phase(field)
         phase = phase_lens + phase_environment
         out = field.copy()
         out.Ex *= np.exp(1j * phase)
         out.Ey *= np.exp(1j * phase)
+        if ThinRealLens.debug: self.lens_phase_sampling_check(field)
         out.spectral_phase_x += phase
         out.spectral_phase_y += phase
         return out

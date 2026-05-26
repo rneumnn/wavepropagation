@@ -10,14 +10,14 @@ import numpy as np
 w0 = 3e-3
 L = 10e-3
 #test on lens geometrie
-R1 = 20e-3
-R2 = -10e-3
+R1 = 0e-3
+R2 = 10e-3
 n = BK7.n_function
 thickness = 1e-3
 lens2 = ThinRealLens(R1=R1, R2=R2, n=n, center_thickness=thickness, relative_aperture=0.9)
 
-R1 = 50e-3      # first surface 
-R2 = -50e-3      # second surface convex to outgoing side
+R1 = 0e-3      # first surface 
+R2 = 50e-3      # second surface convex to outgoing side
 center_thickness = 5e-3
 aperture_radius = 2e-3
 lens = ThinRealLens(R1=R1, R2=R2, n=n, center_thickness=center_thickness, relative_aperture=aperture_radius*2/L)

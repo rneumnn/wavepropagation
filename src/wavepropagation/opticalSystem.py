@@ -36,6 +36,7 @@ class OpticalSystem:
             for c,comp in enumerate(obj.components):
                 current = comp.field.copy()
                 for e, elem in enumerate(self.elements):
+                    print(f"Applying element {elem.__class__.__name__} to component {c} with wavelength {comp.wavelength*1e9:.2f} nm")
                     current, hist = apply_element(elem, current)
                     if keep_history:
                         history_components[c, e] = (

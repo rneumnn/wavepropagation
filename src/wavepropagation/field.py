@@ -178,7 +178,7 @@ class Field:
         return np.abs(self.Ex)**2 + np.abs(self.Ey)**2
 
     def power(self) -> float:
-        return float(np.sum(self.intensity()) * self.grid.dx**2)
+        return float(np.sum(self.intensity()) * self.grid.dxy**2)
 
     def normalize(self, power: float = 1.0) -> "Field":
         p = self.power()

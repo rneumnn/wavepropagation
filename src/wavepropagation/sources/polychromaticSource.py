@@ -38,17 +38,12 @@ class PolychromaticSource:
             
         components = []
         for wl, wt in zip(wavelengths, weights):
-            n_lambda = None
-            if (type(n_medium) == float) or (type(n_medium) == int):
-                n_lambda = n_medium
-            else: #n_medium a function
-                n_lambda = n_medium(float(wl))
             field = MonochromaticSource.gaussian_beam(
                 grid=grid,
                 wavelength=float(wl),
                 w0=w0,
                 polarization=polarization,
-                n_medium=n_lambda,
+                n_medium=n_medium,
             )
             if from_spectrum is None:
                 components.append(

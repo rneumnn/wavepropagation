@@ -167,9 +167,9 @@ class Grid:
     L: float
 
     def __post_init__(self) -> None:
-        self.dx = self.L / self.N
+        self.dxy = self.L / self.N
 
-        x = (np.arange(self.N) - self.N // 2) * self.dx
+        x = (np.arange(self.N) - self.N // 2) * self.dxy
         self.x = x
         self.y = x
 
@@ -177,8 +177,8 @@ class Grid:
         self.R = np.sqrt(self.X**2 + self.Y**2)
         self.Phi = np.arctan2(self.Y, self.X)
 
-        fx = np.fft.fftfreq(self.N, d=self.dx)
-        fy = np.fft.fftfreq(self.N, d=self.dx)
+        fx = np.fft.fftfreq(self.N, d=self.dxy)
+        fy = np.fft.fftfreq(self.N, d=self.dxy)
         self.FX, self.FY = np.meshgrid(fx, fy)
 
         self.KX = 2 * np.pi * self.FX
