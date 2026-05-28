@@ -765,7 +765,7 @@ class PolychromaticField:
 
         return np.abs(Ex_t)**2 + np.abs(Ey_t)**2
     
-    def pulse_front(
+    def pulse_front_from_time_field(
         self,
         times: np.ndarray,
         center_wavelength: float | None = None,
@@ -785,6 +785,34 @@ class PolychromaticField:
 
         peak_indices = np.argmax(I_t, axis=0)
         return times[peak_indices]
+
+    def pulse_front_from_phase_fit(
+        self,
+        order: int = 2,
+        weights: np.ndarray | None = None,
+        center_omega: float | None = None,
+        scale_omega: float = 1e-15
+    ) -> np.ndarray:
+        """
+        Estimate pulse front curvature from spectral phase fit.
+
+        This is a memory-efficient alternative to pulse_front_from_time_field.
+        It does not require storing the full I(t,x,y) array.
+
+        The pulse front curvature can be estimated from the group delay (GD)
+        term of the spectral phase expansion. The GD is given by the first-order
+        coefficient of the polynomial fit to the spectral phase.
+
+        Returns
+        -------
+        GD_x, GD_y:
+            Group delay maps with shape (N, N) in seconds.
+            The curvature can be extracted by fitting GD(x,y) to a parabola.
+        """
+        fit2d_x, fit2d_y, _, _, _ = self.fit_spectral_phase_2D(order=order, weights=weights, center_omega=center_omega, scale_omega=scale_omega, return_polynomials=False)
+        GD_x = fit2d_x[..., 1]  # Group delay is the linear term in the spectral phase expansion.
+        GD_y = fit2d_y[..., 1]
+        return GD_x, GD_y
     
     #memory efficient calculations:
     def pulse_front_streaming(

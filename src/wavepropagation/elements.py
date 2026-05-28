@@ -767,16 +767,60 @@ class QuarterWavePlate(WavePlate):
         super().__init__(theta, retardance=np.pi/2)
 
 class CircularAperture(element_base):
-    def __init__(self, radius: float):
-        self.radius = radius
+    def __init__(
+        self,
+        radius: float,
+        smoothness: float = 0.0,
+        edge_level: float = 1e-4,
+    ):
+        """
+        Circular aperture with Gaussian edge.
+
+        smoothness means:
+            transition region from radius - smoothness
+            to radius.
+
+        At r = radius, the transmission is edge_level.
+        """
+        self.radius = float(radius)
+        self.smoothness = float(smoothness)
+        self.edge_level = float(edge_level)
+
+    def transmission(self, field: Field) -> np.ndarray:
+        r = field.grid.R
+
+        if self.smoothness <= 0:
+            return (r <= self.radius).astype(float)
+
+        r0 = self.radius - self.smoothness
+        r1 = self.radius
+
+        if r0 < 0:
+            r0 = 0.0
+
+        # Choose sigma so that Gaussian reaches edge_level at r1.
+        # exp(-0.5 * ((r1-r0)/sigma)^2) = edge_level
+        sigma = np.sqrt((self.smoothness)**2 / (-2.0 * np.log(self.edge_level)))
+
+        mask = np.ones_like(r, dtype=float)
+
+        transition = r > r0
+        mask[transition] = np.exp(
+            -0.5 * ((r[transition] - r0) / sigma) ** 2
+        )
+        #mask[transition] = mask[transition]//np.max(mask[transition])
+
+        mask[r >= r1] = 0.0
+
+        return mask
 
     def apply(self, field: Field):
-        mask = (field.grid.R <= self.radius).astype(np.complex128)
+        mask = self.transmission(field).astype(np.complex128)
+
         out = field.copy()
         out.Ex *= mask
         out.Ey *= mask
         return out
-    
 class ScalarMask(element_base):
     """
     An element that applies an arbitrary scalar transmission function to the field.
