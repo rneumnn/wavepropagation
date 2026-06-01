@@ -994,7 +994,8 @@ class PolychromaticField:
         mask: np.ndarray | None = None,
     ) -> dict:
         """
-        Fit pulse front with:
+        Fit relative pulsefront delay to a parabola. PF(x,y) = PF(x,y) - PF(cx,cy) is the relative delay compared to the center point.
+        Then fit pulse front with:
 
             PF(x,y) = C + PFT_x*x + PFT_y*y + PFC*(x^2 + y^2)
 
@@ -1038,21 +1039,22 @@ class PolychromaticField:
         pulse_front = np.asarray(pulse_front, dtype=float)
         X = np.asarray(X, dtype=float)
         Y = np.asarray(Y, dtype=float)
+        pulse_front_rel = pulse_front - pulse_front[X.shape[0] // 2, Y.shape[1] // 2]
 
-        if pulse_front.shape != X.shape or pulse_front.shape != Y.shape:
+        if pulse_front_rel.shape != X.shape or pulse_front_rel.shape != Y.shape:
             raise ValueError("pulse_front, X, and Y must have the same shape.")
 
         if mask is None:
-            valid = np.isfinite(pulse_front) & np.isfinite(X) & np.isfinite(Y)
+            valid = np.isfinite(pulse_front_rel) & np.isfinite(X) & np.isfinite(Y)
         else:
             mask = np.asarray(mask, dtype=bool)
-            if mask.shape != pulse_front.shape:
+            if mask.shape != pulse_front_rel.shape:
                 raise ValueError("mask must have the same shape as pulse_front.")
-            valid = mask & np.isfinite(pulse_front) & np.isfinite(X) & np.isfinite(Y)
+            valid = mask & np.isfinite(pulse_front_rel) & np.isfinite(X) & np.isfinite(Y)
 
         x = X[valid]
         y = Y[valid]
-        pf = pulse_front[valid]
+        pf = pulse_front_rel[valid]
 
         if pf.size < 4:
             raise ValueError("Need at least 4 valid points to fit pulse front.")
@@ -1069,7 +1071,7 @@ class PolychromaticField:
         C, PFT_x, PFT_y, PFC = coeffs
 
         fitted = C + PFT_x * X + PFT_y * Y + PFC * (X**2 + Y**2)
-        residual = pulse_front - fitted
+        residual = pulse_front_rel - fitted
 
         return {
             "C": C,

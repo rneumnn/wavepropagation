@@ -108,16 +108,38 @@ times_scan = np.linspace(-0e-14, 500e-14, 400)
 # plt.legend()
 # plt.show()
 
-## calculater pulsefront curvature
+## calculater pulsefront curvature from time field and from phase fit
 fig, axs =plt.subplots(subplot_kw={"projection": "3d"})
-pf = AFTER_LENS.pulse_front(times_lab-100e-15, AFTER_LENS.center_wavelength)
+pf = AFTER_LENS.pulse_front_from_time_field(times_lab-100e-15, AFTER_LENS.center_wavelength)
 AFTER_LENS.plot_pulse_front_to_fig(pf,fig)
-
+plt.title("Pulsefront from time field")
 mask = grid.R<aperture_radius
-pf_fit = AFTER_LENS.fit_pulse_front(pf, AFTER_LENS.grid.X, AFTER_LENS.grid.Y, mask=mask )
+pf_fit = AFTER_LENS.fit_pulse_front(pf, AFTER_LENS.grid.X, AFTER_LENS.grid.Y, mask=mask)
 axs.plot_surface(grid.X, grid.Y, pf_fit["fitted"], cmap = "viridis", linewidth=0, alpha = .5)
 #axs.whire_grid(grid.X, grid.Y, pf_fit["fitted"], linewidth=.5, alpha = .5)
-axs.plot_wireframe(grid.X, grid.Y, pf_fit["fitted"], rstride=5, cstride=5)
+axs.plot_wireframe(grid.X, grid.Y, pf_fit["fitted"], rstride=20, cstride=20)
 print(pf_fit)
 plt.show()
 
+#phase fit from phase data
+fig, axs = plt.subplots(subplot_kw={"projection": "3d"})
+fig.suptitle("Pulsefront from phase fit")
+pf_phase = AFTER_LENS.pulse_front_from_phase_fit()
+AFTER_LENS.plot_pulse_front_to_fig(pf_phase[0],fig)
+pf_fit_phase = AFTER_LENS.fit_pulse_front(pf_phase[0], AFTER_LENS.grid.X, AFTER_LENS.grid.Y, mask=mask)
+axs.plot_surface(grid.X, grid.Y, pf_fit_phase["fitted"], cmap = "viridis", linewidth=0, alpha = .5)
+#axs.whire_grid(grid.X, grid.Y, pf_fit["fitted"], linewidth=.5, alpha = .5)
+axs.plot_wireframe(grid.X, grid.Y, pf_fit_phase["fitted"], rstride=20, cstride=20)
+print(pf_fit_phase)
+plt.show()
+
+#compare pulsefronts from both fit methods
+fig, axs = plt.subplots(subplot_kw={"projection": "3d"})
+plt.title("Comparison of pulse fronts from time field and phase fit")
+axs.plot_surface(grid.X, grid.Y, pf_fit["fitted"], cmap = "viridis", linewidth=0, alpha = .5, label = "from time field")
+axs.plot_wireframe(grid.X, grid.Y, pf_fit_phase["fitted"], rstride=20, cstride=20, label = "phase fit")
+#axs.plot_wireframe(grid.X, grid.Y, pf_fit["fitted"]-pf_fit_phase["fitted"], rstride=20, cstride=20, color = "blue", label = "difference")
+axs.legend()
+plt.show()
+
+### as can be seen both methods give the same results
