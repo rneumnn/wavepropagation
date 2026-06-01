@@ -5,8 +5,9 @@ from .utils import resample_real_array, resample_complex_array, pad_array_center
 from scipy.signal import czt
 
 class Propagate_base:
-    def __init__(self, z: float):
+    def __init__(self, z: float, add_to_spectral_phase: bool = True):
         self.z = z
+        self.add_to_spectral_phase = add_to_spectral_phase
 
     def apply(self, field: Field):
         # This is a placeholder for the actual propagation method.
@@ -14,8 +15,8 @@ class Propagate_base:
         return field.copy()  # No actual propagation implemented here
 
 class AngularSpectrumPropagate(Propagate_base):
-    def __init__(self, z: float):
-        super().__init__(z)
+    def __init__(self, z: float, add_to_spectral_phase: bool = True):
+        super().__init__(z, add_to_spectral_phase)
 
     def apply(self, field: Field) -> Field:
         g = field.grid
@@ -26,8 +27,9 @@ class AngularSpectrumPropagate(Propagate_base):
         out.Ex = np.fft.ifft2(np.fft.fft2(field.Ex) * H)
         out.Ey = np.fft.ifft2(np.fft.fft2(field.Ey) * H)
         # Temporal spectral phase bookkeeping: on-axis propagation phase.
-        out.spectral_phase_x += field.k * self.z
-        out.spectral_phase_y += field.k * self.z
+        if self.add_to_spectral_phase:
+            out.spectral_phase_x += field.k * self.z
+            out.spectral_phase_y += field.k * self.z
         return out
     
 ### angular spectrum with output grid rescaling
@@ -42,8 +44,8 @@ class DirectScaledAngularSpectrumPropagate(Propagate_base):
     Use CZTScaledAngularSpectrumPropagate for larger grids, which should give the same result but is faster.
     """
 
-    def __init__(self, z: float, output_grid):
-        super().__init__(z)
+    def __init__(self, z: float, output_grid, add_to_spectral_phase: bool = True):
+        super().__init__(z, add_to_spectral_phase)
         self.output_grid = output_grid
 
     def _propagate_component(self, E: np.ndarray, field: Field) -> np.ndarray:
@@ -112,9 +114,9 @@ class DirectScaledAngularSpectrumPropagate(Propagate_base):
             self.output_grid,
             fill_value=np.nan,
         )
-
-        out.spectral_phase_x += field.k * self.z
-        out.spectral_phase_y += field.k * self.z
+        if self.add_to_spectral_phase:
+            out.spectral_phase_x += field.k * self.z
+            out.spectral_phase_y += field.k * self.z
 
         return out
     
@@ -133,8 +135,8 @@ class CZTScaledAngularSpectrumPropagate(Propagate_base):
     The output grid must also be a regular centered Grid.
     """
 
-    def __init__(self, z: float, output_grid, pad_factor: int = 1):
-        super().__init__(z)
+    def __init__(self, z: float, output_grid, pad_factor: int = 1, add_to_spectral_phase: bool = True):
+        super().__init__(z, add_to_spectral_phase)
         self.output_grid = output_grid
         self.pad_factor = int(pad_factor)
 
@@ -306,14 +308,15 @@ class CZTScaledAngularSpectrumPropagate(Propagate_base):
         )
 
         # Add on-axis propagation phase on the new grid.
-        out.spectral_phase_x += field.k * self.z
-        out.spectral_phase_y += field.k * self.z
+        if self.add_to_spectral_phase:
+            out.spectral_phase_x += field.k * self.z
+            out.spectral_phase_y += field.k * self.z
 
         return out
     
 class FresnelPropagate(Propagate_base):
-    def __init__(self, z: float):
-        super().__init__(z)
+    def __init__(self, z: float, add_to_spectral_phase: bool = True):
+        super().__init__(z, add_to_spectral_phase)
 
     def apply(self, field: Field) -> Field:
         g = field.grid
@@ -324,6 +327,7 @@ class FresnelPropagate(Propagate_base):
         out = field.copy()
         out.Ex = np.fft.ifft2(np.fft.fft2(field.Ex) * H)
         out.Ey = np.fft.ifft2(np.fft.fft2(field.Ey) * H)
-        out.spectral_phase_x += field.k * self.z
-        out.spectral_phase_y += field.k * self.z
+        if self.add_to_spectral_phase:
+            out.spectral_phase_x += field.k * self.z
+            out.spectral_phase_y += field.k * self.z
         return out
