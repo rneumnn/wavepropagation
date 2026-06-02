@@ -1,11 +1,8 @@
 from dataclasses import dataclass
 import numpy as np
-import numpy.typing as npt
 from scipy.constants import c as c0
-from copy import copy
-
-from .field import Field
-from .grid import Grid
+from .field import Field, RadialField
+from .grid import Grid, RadialGrid
 from .sources.spectralUtils import Spectrum
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
@@ -31,7 +28,7 @@ class SpectralComponent:
     wavelength: float = None
     weight: float = None  #weights are the same for lambdas and omegas
     omega:float = None
-    field: Field = None
+    field: Field | RadialField = None
     sampling_method: str = "unknown"
     _possible_methods = Spectrum._possible_methods
 
@@ -43,6 +40,9 @@ class SpectralComponent:
     
     def is_unknown_sampled(self):
         return self.sampling_method in ("unknown",)
+    
+    def is_radial_field(self):
+        return isinstance(self.field, RadialField)
 
     def __post_init__(self):
         if self.sampling_method not in SpectralComponent._possible_methods:
@@ -59,8 +59,31 @@ class SpectralComponent:
             raise Warning("No omega given. Using self.field.omega")
         if self.weight is None:
             raise ValueError("No weight is set for this Spectral Component")
-            
-    
+
+    def _check_index(self,index):
+        if self.is_radial_field():
+            if not isinstance(index, int):
+                raise TypeError("RadialField expects index as int.")
+            if not (0 <= index < self.field.Ex.shape[0]):
+                raise IndexError(
+                    f"index={index} out of bounds for radial field size {self.field.Ex.shape[0]}"
+                )
+            return index
+        else:
+            if not isinstance(index, tuple) or len(index) != 2:
+                raise TypeError("2D Field expects index as tuple (iy, ix).")
+            iy, ix = index
+            if not (0 <= iy < self.field.Ex.shape[0]):
+                raise IndexError(
+                    f"iy={iy} out of bounds for field shape {self.field.Ex.shape}"
+                )
+            if not (0 <= ix < self.field.Ex.shape[1]):
+                raise IndexError(
+                    f"ix={ix} out of bounds for field shape {self.field.Ex.shape}"
+                )
+            return index
+        
+
     def copy(self) -> "SpectralComponent":
         return SpectralComponent(
             wavelength=self.wavelength,
@@ -79,8 +102,17 @@ class PolychromaticField:
         if len(self.components) == 0:
             raise ValueError("components must not be empty")
 
-        self.grid:Grid = self.components[0].field.grid
+        self.grid:Grid | RadialGrid = self.components[0].field.grid
 
+        for comp in self.components:
+            if comp.field.grid is not self.grid:
+                raise ValueError("All components must share the same Grid instance.")
+            if not np.isclose(comp.field.wavelength, comp.wavelength):
+                raise ValueError("Component wavelength and field wavelength must match.")
+            if comp.weight < 0:
+                raise ValueError("Spectral weights must be non-negative.")
+            
+    def __post_init__(self):
         self._wavelengths = np.fromiter(
             (comp.wavelength for comp in self.components),
             dtype=float,
@@ -95,16 +127,10 @@ class PolychromaticField:
         self._omegas = 2 * np.pi * c0 / self._wavelengths
         self._center_wavelength = float(np.average(self._wavelengths, weights=self._weights))
         self._center_omega = 2 * np.pi * c0 / self._center_wavelength
-        self._center_index = int(np.argmin(np.abs(self._omegas - self._center_omega)))
+        self._spectral_center_index = int(np.argmin(np.abs(self._omegas - self._center_omega)))
+        self._center_index = 0 if self.is_radial else self.grid.N // 2
         self._time_fields = None #for now only current field is saved, later should contain a map z, E(t) for each position where a timefield was calculated
 
-        for comp in self.components:
-            if comp.field.grid is not self.grid:
-                raise ValueError("All components must share the same Grid instance.")
-            if not np.isclose(comp.field.wavelength, comp.wavelength):
-                raise ValueError("Component wavelength and field wavelength must match.")
-            if comp.weight < 0:
-                raise ValueError("Spectral weights must be non-negative.")
     
     def copy(self)->"PolychromaticField":
         out = PolychromaticField(
@@ -133,15 +159,23 @@ class PolychromaticField:
         return self._center_omega
     
     @property
+    def spectral_center_index(self) -> int:
+        return self._spectral_center_index
+    
+    @property
     def center_index(self) -> int:
         return self._center_index
-    
+
     @property
     def time_field_zi(self) -> np.ndarray:
         """
         2 dim timefield a a specific position zi: E_zi(t,x,y)
         """
         return self._time_fields
+    
+    @property
+    def is_radial(self):
+        return isinstance(self.grid, RadialGrid)
 
     def intensity(self) -> np.ndarray:
         """
@@ -150,7 +184,7 @@ class PolychromaticField:
         This is useful for camera-like images, but it does not show
         pulse-front curvature in time.
         """
-        total = np.zeros((self.grid.N, self.grid.N), dtype=float)
+        total = np.zeros(self.grid.shape, dtype=float)
 
         for comp in self.components:
             total += comp.weight * comp.field.intensity()
@@ -173,7 +207,7 @@ class PolychromaticField:
     
     def spectral_phase_at_index(
         self,
-        index: tuple[int, int],
+        index: tuple[int, int]|int,
         centered: bool = False,
         return_info: bool = False,
     ):
@@ -183,7 +217,7 @@ class PolychromaticField:
         Parameters
         ----------
         index:
-            Spatial index as (iy, ix).
+            Spatial index as (iy, ix) or a single integer for radial grids.
 
         centered:
             If True, subtract phase of the spectral component closest to center_omega.
@@ -208,36 +242,33 @@ class PolychromaticField:
         info:
             Optional dict with center index and center values.
         """
-        iy, ix = index
-
-        if not (0 <= iy < self.grid.N):
-            raise IndexError(f"iy={iy} out of bounds for grid size {self.grid.N}")
-
-        if not (0 <= ix < self.grid.N):
-            raise IndexError(f"ix={ix} out of bounds for grid size {self.grid.N}")
+        # Determine indexing mode from the first field
+        field_index = self._check_index(index)
 
         omegas = self.omegas
         wavelengths = self.wavelengths
         weights = self.weights
 
         phases_x = np.fromiter(
-            (comp.field.spectral_phase_x[iy, ix] for comp in self.components),
+            (comp.field.spectral_phase_x[field_index] for comp in self.components),
             dtype=float,
             count=len(self.components),
         )
 
         phases_y = np.fromiter(
-            (comp.field.spectral_phase_y[iy, ix] for comp in self.components),
+            (comp.field.spectral_phase_y[field_index] for comp in self.components),
             dtype=float,
             count=len(self.components),
-)
+        )
 
         info = None
 
         if centered:
-            center_idx = self.center_index
+            center_idx = self.spectral_center_index
+
             center_phase_x = phases_x[center_idx]
             center_phase_y = phases_y[center_idx]
+
             phases_x = phases_x - center_phase_x
             phases_y = phases_y - center_phase_y
 
@@ -259,6 +290,7 @@ class PolychromaticField:
 
         return phases_x, phases_y, omegas, weights
 
+
     def spectral_phase_center(self, centered: bool = False) -> tuple[np.ndarray, np.ndarray]:
         """
         Get the spectral phase at the center point for each spectral component.
@@ -279,45 +311,73 @@ class PolychromaticField:
             A 1D array containing the angular frequencies corresponding to each spectral component.
         """
         
-        ix = self.grid.N // 2
-        iy = self.grid.N // 2
+        if self.is_radial:
+            index = self.center_index
+        else:
+            index = (self.center_index, self.center_index)
 
-        return self.spectral_phase_at_index((ix,iy), centered=centered)
+        return self.spectral_phase_at_index(index, centered=centered)
     
-    def spectral_phase_2D(self) -> np.ndarray:
+
+    def spectral_phase_array(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Get the spectral phase at all points in the grid for each spectral component. This can be useful for analyzing spatially varying dispersion effects.
+        Get spectral phase at all spatial points for each spectral component.
 
         Returns
         -------
         phases_x:
-            A 3D array with shape (N, N, num_components) containing the spectral phase of Ex at each point in the grid for each spectral component.
-        
+            Array with shape (*field_shape, num_components).
+
+            For 2D fields:
+                (N, N, num_components)
+
+            For radial fields:
+                (Nr, num_components)
+
         phases_y:
-            A 3D array with shape (N, N, num_components) containing the spectral phase of Ey at each point in the grid for each spectral component.
-        
+            Same shape as phases_x.
+
         omegas:
-            A 1D array containing the angular frequencies corresponding to each spectral component.
+            Array with shape (num_components,).
         """
-        N = self.grid.N
         num_components = len(self.components)
-        phases_x = np.zeros((N, N, num_components), dtype=float)
-        phases_y = np.zeros((N, N, num_components), dtype=float)
-        omegas = 2 * np.pi * c0 / self.wavelengths
+
+        if num_components == 0:
+            raise ValueError("No spectral components available.")
+
+        field_shape = self.components[0].field.spectral_phase_x.shape
+
+        phases_x = np.zeros((*field_shape, num_components), dtype=float)
+        phases_y = np.zeros((*field_shape, num_components), dtype=float)
 
         for i, comp in enumerate(self.components):
-            phases_x[:, :, i] = comp.field.spectral_phase_x
-            phases_y[:, :, i] = comp.field.spectral_phase_y
+            if comp.field.spectral_phase_x.shape != field_shape:
+                raise ValueError(
+                    f"Component {i} spectral_phase_x shape "
+                    f"{comp.field.spectral_phase_x.shape} does not match {field_shape}."
+                )
+
+            if comp.field.spectral_phase_y.shape != field_shape:
+                raise ValueError(
+                    f"Component {i} spectral_phase_y shape "
+                    f"{comp.field.spectral_phase_y.shape} does not match {field_shape}."
+                )
+
+            phases_x[..., i] = comp.field.spectral_phase_x
+            phases_y[..., i] = comp.field.spectral_phase_y
+
+        omegas = self.omegas
 
         return phases_x, phases_y, omegas
     
-    def fit_spectral_phase_1D(
+    
+    def fit_spectral_phase_at_index(
         self,
         order: int = 2,
         weights: np.ndarray | None = None,
         center_omega: float | None = None,
         scale_omega: float = 1e-15,
-        field_index = None
+        field_index: tuple[int, int] | int | None = None
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Fit spectral phase at the field center to a polynomial.
@@ -349,7 +409,7 @@ class PolychromaticField:
             then converted back to SI powers of rad/s.
         
         field_index:
-            Index [x,y] of the field where the phase should be fit.
+            Index [x,y] or r of the field where the phase should be fit.
             If None the center of the array will be fitted.
 
         Returns
@@ -467,16 +527,24 @@ class PolychromaticField:
         
 
 
-    def fit_spectral_phase_2D(
+    def fit_spectral_phase_array(
         self,
         order: int = 2,
-        weights: np.ndarray | None = None,
+        weights: np.ndarray | None | bool = None,
         center_omega: float | None = None,
         scale_omega: float = 1e-15,
         return_polynomials: bool = True,
     ):
         """
-        Vectorized polynomial fit of spectral phase at every grid point.
+        Vectorized polynomial fit of spectral phase at every spatial point.
+
+        Works for both:
+
+            2D fields:
+                phases.shape = (N, N, num_components)
+
+            radial fields:
+                phases.shape = (Nr, num_components)
 
         Fits:
 
@@ -485,10 +553,10 @@ class PolychromaticField:
                     + c2 * (omega - omega0)^2
                     + ...
 
-        The coefficient convention is the same as fit_spectral_phase_1D:
+        Coefficient convention:
 
             coefficients[..., 0] = c0
-            coefficients[..., 1] = c1 = group delay [s]
+            coefficients[..., 1] = c1 = GD [s]
             coefficients[..., 2] = c2, so GDD = 2*c2 [s^2]
             coefficients[..., 3] = c3, so TOD = 6*c3 [s^3]
 
@@ -499,11 +567,19 @@ class PolychromaticField:
 
         weights:
             Optional spectral weights with shape (num_components,).
-            If given, performs a weighted least-squares fit.
+
+            - None:
+                use self.weights
+
+            - False:
+                unweighted fit
+
+            - np.ndarray:
+                use provided weights
 
         center_omega:
             Expansion angular frequency omega0 in rad/s.
-            If None, self.center_omega() is used.
+            If None, self.center_omega is used.
 
         scale_omega:
             Internal numerical scaling.
@@ -511,46 +587,50 @@ class PolychromaticField:
             and then converted back to SI powers of rad/s.
 
         return_polynomials:
-            If True, also returns a 2D array of Polynomial objects.
-            Each polynomial expects input domega = omega - omega0 in rad/s.
+            If True, also returns object arrays of Polynomial objects with
+            shape equal to the spatial field shape.
 
         Returns
         -------
-        polynomials_x:
-            Object array with shape (N, N), if return_polynomials=True.
-            Each entry is a Polynomial object.
-        
-        polynomials_y:
-            Object array with shape (N, N), if return_polynomials=True.
-            Each entry is a Polynomial object.
+        If return_polynomials is False:
 
-        coefficients_x:
-            Float array with shape (N, N, order + 1).
-        
-        coefficients_y:
-            Float array with shape (N, N, order + 1).
+            coefficients_x, coefficients_y, domega, phases_x, phases_y
 
-        domega:
-            Angular frequency offsets omega - omega0 in rad/s.
+        If return_polynomials is True:
 
-        phases_x:
-            Spectral phases used for fitting, shape (N, N, num_components).
-        
-        phases_y:
-            Spectral phases used for fitting, shape (N, N, num_components).
+            polynomials_x, polynomials_y,
+            coefficients_x, coefficients_y,
+            domega, phases_x, phases_y
         """
-        phases_x, phases_y, omegas = self.spectral_phase_2D()
+        phases_x, phases_y, omegas = self.spectral_phase_array()
+
+        phases_x = np.asarray(phases_x, dtype=float)
+        phases_y = np.asarray(phases_y, dtype=float)
+        omegas = np.asarray(omegas, dtype=float)
 
         if center_omega is None:
             center_omega = self.center_omega
 
-        if phases_x.ndim != 3:
-            raise ValueError("phases must have shape (N, N, num_components).")
+        if phases_x.shape != phases_y.shape:
+            raise ValueError(
+                f"phases_x and phases_y must have the same shape, "
+                f"got {phases_x.shape} and {phases_y.shape}."
+            )
+
+        if phases_x.ndim < 2:
+            raise ValueError(
+                "phases must have shape (*field_shape, num_components), "
+                "for example (N, N, M) or (Nr, M)."
+            )
 
         if phases_x.shape[-1] != omegas.size:
             raise ValueError(
                 "Last dimension of phases must match number of spectral components."
             )
+
+        field_shape = phases_x.shape[:-1]
+        M = phases_x.shape[-1]
+        num_points = int(np.prod(field_shape))
 
         # Sort spectrum by omega.
         idx = np.argsort(omegas)
@@ -564,152 +644,243 @@ class PolychromaticField:
         # x = domega in rad/fs if scale_omega = 1e-15.
         x = domega * scale_omega
 
-        N0, N1, M = phases_x.shape
-
-        # Reshape spectral dimension first:
+        # Move spectral dimension first and flatten all spatial dimensions.
         #
-        # phases: (N, N, M)
-        # Y:      (M, N*N)
-        Y_x = np.moveaxis(phases_x, -1, 0).reshape(M, -1)
-        Y_y = np.moveaxis(phases_y, -1, 0).reshape(M, -1)
+        # phases_x: (*field_shape, M)
+        # Y_x:      (M, num_points)
+        Y_x = np.moveaxis(phases_x, -1, 0).reshape(M, num_points)
+        Y_y = np.moveaxis(phases_y, -1, 0).reshape(M, num_points)
 
-        # Vandermonde matrix in increasing powers:
+        # Vandermonde matrix with increasing powers:
         #
         # V[:, 0] = 1
         # V[:, 1] = x
         # V[:, 2] = x**2
-        # ...
         V = np.polynomial.polynomial.polyvander(x, deg=order)
 
-        if weights is not None:
-            weights = np.asarray(weights, dtype=float)
-
-            if weights.shape[0] != M:
-                raise ValueError("weights must have shape (num_components,).")
-
-            weights = weights[idx]
-
-            if np.any(weights < 0):
-                raise ValueError("weights must be non-negative.")
-
-            sqrt_w = np.sqrt(weights)
-
-            V_fit = V * sqrt_w[:, None]
-            Y_x_fit = Y_x * sqrt_w[:, None]
-            Y_y_fit = Y_y * sqrt_w[:, None]
-        elif weights is not False:
-            weights = self.weights[idx]
-            if np.any(weights < 0):
-                raise ValueError("weights must be non-negative.")
-
-            sqrt_w = np.sqrt(weights)
-
-            V_fit = V * sqrt_w[:, None]
-            Y_x_fit = Y_x * sqrt_w[:, None]
-            Y_y_fit = Y_y * sqrt_w[:, None]
-        else:
+        if weights is False:
             V_fit = V
             Y_x_fit = Y_x
             Y_y_fit = Y_y
+        else:
+            if weights is None:
+                weights_fit = np.asarray(self.weights, dtype=float)
+            else:
+                weights_fit = np.asarray(weights, dtype=float)
 
-        # Solve all pixels at once.
+            if weights_fit.shape[0] != M:
+                raise ValueError("weights must have shape (num_components,).")
+
+            weights_fit = weights_fit[idx]
+
+            if np.any(weights_fit < 0):
+                raise ValueError("weights must be non-negative.")
+
+            sqrt_w = np.sqrt(weights_fit)
+
+            V_fit = V * sqrt_w[:, None]
+            Y_x_fit = Y_x * sqrt_w[:, None]
+            Y_y_fit = Y_y * sqrt_w[:, None]
+
+        # Solve all spatial points at once.
         #
-        # coeff_scaled shape:
-        #     (order + 1, N*N)
+        # coeff_scaled_x shape:
+        #     (order + 1, num_points)
         coeff_scaled_x, *_ = np.linalg.lstsq(V_fit, Y_x_fit, rcond=None)
         coeff_scaled_y, *_ = np.linalg.lstsq(V_fit, Y_y_fit, rcond=None)
 
         # Convert from scaled variable back to SI.
         #
         # Fit was:
-        #     phi = b_m * (scale_omega * domega)^m
+        #   phi = b_m * (scale_omega * domega)^m
         #
         # Desired:
-        #     phi = c_m * domega^m
+        #   phi = c_m * domega^m
         #
         # Therefore:
-        #     c_m = b_m * scale_omega^m
+        #   c_m = b_m * scale_omega^m
         powers = scale_omega ** np.arange(order + 1)
+
         coeff_si_x = coeff_scaled_x * powers[:, None]
         coeff_si_y = coeff_scaled_y * powers[:, None]
 
         # Reshape to:
-        #     (N, N, order + 1)
-        coefficients_x = coeff_si_x.reshape(order + 1, N0, N1)
-        coefficients_x = np.moveaxis(coefficients_x, 0, -1)
-        coefficients_y = coeff_si_y.reshape(order + 1, N0, N1)
-        coefficients_y = np.moveaxis(coefficients_y, 0, -1)
+        #     (*field_shape, order + 1)
+        coefficients_x = coeff_si_x.T.reshape(*field_shape, order + 1)
+        coefficients_y = coeff_si_y.T.reshape(*field_shape, order + 1)
 
         if not return_polynomials:
             return coefficients_x, coefficients_y, domega, phases_x, phases_y
 
-        # Build 2D object array of Polynomial objects.
+        # Build object arrays of Polynomial objects.
         #
-        # Each polynomial expects input:
-        #     domega = omega - omega0
-        # in rad/s.
-        polynomials_x = np.empty((N0, N1), dtype=object)
-        polynomials_y = np.empty((N0, N1), dtype=object)
+        # Shape:
+        #     field_shape
+        #
+        # For 2D:
+        #     (N, N)
+        #
+        # For radial:
+        #     (Nr,)
+        polynomials_x = np.empty(field_shape, dtype=object)
+        polynomials_y = np.empty(field_shape, dtype=object)
 
-        for i in range(N0):
-            for j in range(N1):
-                polynomials_x[i, j] = np.polynomial.Polynomial(coefficients_x[i, j, :])
-                polynomials_y[i, j] = np.polynomial.Polynomial(coefficients_y[i, j, :])
+        for spatial_index in np.ndindex(field_shape):
+            polynomials_x[spatial_index] = np.polynomial.Polynomial(
+                coefficients_x[spatial_index]
+            )
+            polynomials_y[spatial_index] = np.polynomial.Polynomial(
+                coefficients_y[spatial_index]
+            )
 
-        return polynomials_x, polynomials_y, coefficients_x, coefficients_y, domega, phases_x, phases_y
+        return (
+            polynomials_x,
+            polynomials_y,
+            coefficients_x,
+            coefficients_y,
+            domega,
+            phases_x,
+            phases_y,
+        )
 
-
-    def get_phase_expansion(self, order: int = 3) -> tuple[PhaseExpansion]:
+    def get_phase_expansion(
+        self,
+        order: int = 3,
+        index: tuple[int, int] | int | None = None,
+    ) -> tuple[PhaseExpansion, PhaseExpansion]:
         """
-        Get the polynomial expansion of the spectral phase at the center point (ix, iy) up to a given order. This is useful for analyzing dispersion effects.
+        Get polynomial expansion of the spectral phase at one spatial point.
 
-        Parameters
-        ----------
-        order:
-            The order of the polynomial expansion. For example, order=2 will give you the constant term (overall phase), linear term (group delay), and quadratic term (GDD).
+        Works for both:
+            - 2D fields: index = (iy, ix)
+            - radial fields: index = ir
+
+        If index is None:
+            - 2D: uses the center pixel
+            - radial: uses the first radial sample
+
         Returns
         -------
-        expansion_x:
-            The polynomial expansion coefficients.
-            phi0: Overall phase (constant term)
-            group_delay: Group delay (first-order term)
-            gdd: Group delay dispersion (second-order term)
-            tod: Third-order dispersion (third-order term)
-
-        expansion_y:
-            The polynomial expansion coefficients.
-            phi0: Overall phase (constant term)
-            group_delay: Group delay (first-order term)
-            gdd: Group delay dispersion (second-order term)
-            tod: Third-order dispersion (third-order term)
+        expansion_x, expansion_y:
+            PhaseExpansion objects with:
+                phi0
+                GD
+                GDD
+                TOD
         """
-        coefficients_x, coefficients_y, _, _, _ = self.fit_spectral_phase_1D(order=order)
-        expansion_x = PhaseExpansion(
-            phi0 = coefficients_x[0],  # Overall phase
-            GD = coefficients_x[1],  # Group delay (first-order term)
-            GDD = 2*coefficients_x[2] if order >= 2 else 0.0,  # GDD (second-order term)
-            TOD = 6*coefficients_x[3] if order >= 3 else 0.0,  # Third-order dispersion (third-order term)
+        if index is None:
+            first_field = self.components[0].field
+
+            if first_field.Ex.ndim == 1:
+                index = 0
+            elif first_field.Ex.ndim == 2:
+                cy = first_field.Ex.shape[0] // 2
+                cx = first_field.Ex.shape[1] // 2
+                index = (cy, cx)
+            else:
+                raise ValueError("Only 1D radial and 2D fields are supported.")
+
+        coefficients_x, coefficients_y, _, _, _ = self.fit_spectral_phase_at_index(
+            order=order,
+            index=index,
         )
+
+        expansion_x = PhaseExpansion(
+            phi0=coefficients_x[0],
+            GD=coefficients_x[1] if order >= 1 else 0.0,
+            GDD=2 * coefficients_x[2] if order >= 2 else 0.0,
+            TOD=6 * coefficients_x[3] if order >= 3 else 0.0,
+        )
+
         expansion_y = PhaseExpansion(
-            phi0 = coefficients_y[0],  # Overall phase
-            GD = coefficients_y[1],  # Group delay (first-order term)
-            GDD = 2*coefficients_y[2] if order >= 2 else 0.0,  # GDD (second-order term)
-            TOD = 6*coefficients_y[3] if order >= 3 else 0.0,  # Third-order dispersion (third-order term)
+            phi0=coefficients_y[0],
+            GD=coefficients_y[1] if order >= 1 else 0.0,
+            GDD=2 * coefficients_y[2] if order >= 2 else 0.0,
+            TOD=6 * coefficients_y[3] if order >= 3 else 0.0,
         )
 
         return expansion_x, expansion_y
-
+    
 
     def calculate_time_field(
         self,
         times: np.ndarray,
         center_wavelength: float | None = None,
         use_spectral_phase: bool = True,
-        force_new_evaluation: bool = False
+        force_new_evaluation: bool = False,
     ):
+        """
+        Reconstruct the complex time-domain field from the discrete spectral
+        components.
+
+        The reconstruction is performed coherently by summing all spectral
+        components according to
+
+            E(t, r) = sum_i sqrt(w_i) E_i(r)
+                    exp[-1j * (omega_i - omega0) * t]
+
+        where ``r`` denotes the spatial coordinates of the field. For ordinary
+        2D fields this corresponds to ``(y, x)`` and for radial fields to the
+        radial coordinate ``r``.
+
+        This method is shape-agnostic and works for both Cartesian ``Field``
+        objects and radial ``RadialField`` objects, as long as all spectral
+        components share the same spatial field shape.
+
+        Parameters
+        ----------
+        times:
+            1D array of time samples in seconds.
+
+        center_wavelength:
+            Reference vacuum wavelength used to define the carrier frequency
+            ``omega0``. If None, ``self.center_wavelength`` is used.
+
+        use_spectral_phase:
+            If True, the reconstruction uses the unwrapped stored spectral phases
+            ``spectral_phase_x`` and ``spectral_phase_y`` together with the field
+            amplitudes ``abs(Ex)`` and ``abs(Ey)``. This is the recommended mode
+            for pulse broadening, group delay, GDD, and PFC analysis.
+
+            If False, the complex field arrays ``Ex`` and ``Ey`` are used directly.
+            In that case, only the wrapped complex phase contained in the fields is
+            used.
+
+        force_new_evaluation:
+            If False and a cached time field exists in ``self.time_field_zi``, the
+            cached result is returned. If True, the time field is recomputed.
+
+        Returns
+        -------
+        Ex_t:
+            Complex time-domain x-polarized field.
+
+            Shape:
+                ``(Nt, *field_shape)``
+
+            Examples:
+                - Cartesian field: ``(Nt, N, N)``
+                - Radial field: ``(Nt, Nr)``
+
+        Ey_t:
+            Complex time-domain y-polarized field with the same shape as ``Ex_t``.
+
+        Notes
+        -----
+        The spectral weights are applied as field-amplitude weights using
+        ``sqrt(weight)``. This is appropriate when the stored spectral weights
+        represent intensity or power weights.
+
+        The temporal phase convention is
+
+            exp[-1j * (omega_i - omega0) * t]
+
+        so a positive linear spectral phase corresponds to a positive group delay
+        in this convention.
+        """
         if (self.time_field_zi is not None) and not force_new_evaluation:
             return self.time_field_zi
-        
+
         times = np.asarray(times, dtype=float)
 
         if center_wavelength is None:
@@ -718,35 +889,54 @@ class PolychromaticField:
         omega0 = 2 * np.pi * c0 / center_wavelength
 
         Nt = len(times)
-        N = self.grid.N
 
-        Ex_t = np.zeros((Nt, N, N), dtype=np.complex128)
-        Ey_t = np.zeros((Nt, N, N), dtype=np.complex128)
+        if len(self.components) == 0:
+            raise ValueError("No spectral components available.")
+
+        field_shape = self.components[0].field.Ex.shape
+
+        Ex_t = np.zeros((Nt, *field_shape), dtype=np.complex128)
+        Ey_t = np.zeros((Nt, *field_shape), dtype=np.complex128)
+
+        # Broadcasting shape:
+        #   Cartesian 2D: (Nt, 1, 1)
+        #   Radial 1D:    (Nt, 1)
+        temporal_shape = (Nt,) + (1,) * len(field_shape)
 
         for i, comp in enumerate(self.components):
-            print(f"Processing component {i}/{len(self.components)} with wavelength {comp.wavelength*1e9:.2f} nm with weight {comp.weight:.3f}")
             field = comp.field
+
+            if field.Ex.shape != field_shape:
+                raise ValueError(
+                    f"Component {i} Ex shape {field.Ex.shape} does not match {field_shape}."
+                )
+
+            if field.Ey.shape != field_shape:
+                raise ValueError(
+                    f"Component {i} Ey shape {field.Ey.shape} does not match {field_shape}."
+                )
+
             omega = 2 * np.pi * c0 / comp.wavelength
             domega = omega - omega0
 
-            temporal = np.exp(-1j * domega * times)[:, None, None]
+            temporal = np.exp(-1j * domega * times).reshape(temporal_shape)
             amp = np.sqrt(comp.weight)
 
             if use_spectral_phase:
-                # Remove wrapped phase from Ex/Ey amplitude and reapply unwrapped spectral_phase.
                 Ax = np.abs(field.Ex)
                 Ay = np.abs(field.Ey)
 
                 Ex_spec = Ax * np.exp(1j * field.spectral_phase_x)
                 Ey_spec = Ay * np.exp(1j * field.spectral_phase_y)
             else:
-                # Old behavior: uses wrapped complex field directly.
                 Ex_spec = field.Ex
                 Ey_spec = field.Ey
 
-            Ex_t += amp * Ex_spec[None, :, :] * temporal
-            Ey_t += amp * Ey_spec[None, :, :] * temporal
-        self.time_field_zi
+            Ex_t += amp * Ex_spec[None, ...] * temporal
+            Ey_t += amp * Ey_spec[None, ...] * temporal
+
+        self.time_field_zi = (Ex_t, Ey_t)
+
         return Ex_t, Ey_t
         
     def time_intensity(
@@ -769,51 +959,149 @@ class PolychromaticField:
         self,
         times: np.ndarray,
         center_wavelength: float | None = None,
-        force_new_evaluation:bool = False
+        force_new_evaluation: bool = False,
     ) -> np.ndarray:
         """
-        Estimate pulse arrival time t_peak(x,y) from max I(x,y,t).
+        Estimate the pulse-front arrival time from the maximum of the
+        time-domain intensity.
 
-        This is the quantity you need to see PFC:
-            tau(x,y) ~ PFC * (x^2 + y^2)
+        This method reconstructs the time-dependent intensity
+
+            I(t, r) = |Ex(t, r)|^2 + |Ey(t, r)|^2
+
+        and returns the time at which the intensity is maximal at each spatial
+        point.
+
+        The method is shape-agnostic and works for both Cartesian and radial
+        fields:
+
+            Cartesian Field:
+                I_t shape      = (Nt, N, N)
+                return shape   = (N, N)
+
+            RadialField:
+                I_t shape      = (Nt, Nr)
+                return shape   = (Nr,)
+
+        Parameters
+        ----------
+        times:
+            1D array of time samples in seconds.
+
+        center_wavelength:
+            Reference vacuum wavelength used for the carrier frequency. If None,
+            ``self.center_wavelength`` is used.
+
+        force_new_evaluation:
+            If True, forces recalculation of the cached time field.
+
+        Returns
+        -------
+        t_peak:
+            Pulse-front arrival time at every spatial point, in seconds.
+
+        Notes
+        -----
+        This method can be memory intensive because it constructs the full
+        time-dependent intensity array. For large grids, use
+        ``pulse_front_streaming`` instead.
+
+        The result can be affected by temporal aliasing if the spectral sampling is
+        too sparse or if the time window is not centered around the pulse.
         """
         I_t = self.time_intensity(
             times=times,
             center_wavelength=center_wavelength,
-            force_new_evaluation=force_new_evaluation
+            force_new_evaluation=force_new_evaluation,
         )
 
         peak_indices = np.argmax(I_t, axis=0)
         return times[peak_indices]
+    
 
     def pulse_front_from_phase_fit(
         self,
         order: int = 2,
-        weights: np.ndarray | None = None,
+        weights: np.ndarray | None | bool = None,
         center_omega: float | None = None,
-        scale_omega: float = 1e-15
-    ) -> np.ndarray:
+        scale_omega: float = 1e-15,
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
-        Estimate pulse front curvature from spectral phase fit.
+        Estimate the pulse front from the spectral phase fit.
 
-        This is a memory-efficient alternative to pulse_front_from_time_field.
-        It does not require storing the full I(t,x,y) array.
+        The pulse front is identified with the group-delay map
 
-        The pulse front curvature can be estimated from the group delay (GD)
-        term of the spectral phase expansion. The GD is given by the first-order
-        coefficient of the polynomial fit to the spectral phase.
+            tau(r) = d phi(r, omega) / d omega |_{omega0}
+
+        which is the linear coefficient of the spectral phase expansion
+
+            phi(r, omega) = c0(r)
+                        + c1(r) * (omega - omega0)
+                        + c2(r) * (omega - omega0)^2
+                        + ...
+
+        Therefore:
+
+            GD(r) = c1(r)
+
+        This method is usually more stable and memory efficient than extracting the
+        pulse front from ``argmax(I(t, r))``.
+
+        Parameters
+        ----------
+        order:
+            Polynomial order used for the spectral phase fit. ``order=2`` is
+            usually sufficient for GD and GDD.
+
+        weights:
+            Optional spectral weights.
+
+            - None:
+                Use ``self.weights``.
+            - False:
+                Use an unweighted fit.
+            - np.ndarray:
+                Use the provided weights.
+
+        center_omega:
+            Expansion frequency in rad/s. If None, ``self.center_omega`` is used.
+
+        scale_omega:
+            Internal frequency scaling used for numerical conditioning. The default
+            ``1e-15`` fits in rad/fs and converts coefficients back to SI units.
 
         Returns
         -------
-        GD_x, GD_y:
-            Group delay maps with shape (N, N) in seconds.
-            The curvature can be extracted by fitting GD(x,y) to a parabola.
+        GD_x:
+            Group-delay map for Ex, in seconds.
+
+            Shape:
+                - Cartesian Field: ``(N, N)``
+                - RadialField: ``(Nr,)``
+
+        GD_y:
+            Group-delay map for Ey, in seconds. Same shape as ``GD_x``.
+
+        Notes
+        -----
+        To obtain a relative pulse front for PFC fitting, subtract a reference
+        value, for example the center value:
+
+            GD_rel = GD - GD_center
         """
-        fit2d_x, fit2d_y, _, _, _ = self.fit_spectral_phase_2D(order=order, weights=weights, center_omega=center_omega, scale_omega=scale_omega, return_polynomials=False)
-        GD_x = fit2d_x[..., 1]  # Group delay is the linear term in the spectral phase expansion.
-        GD_y = fit2d_y[..., 1]
+        coefficients_x, coefficients_y, _, _, _ = self.fit_spectral_phase_array(
+            order=order,
+            weights=weights,
+            center_omega=center_omega,
+            scale_omega=scale_omega,
+            return_polynomials=False,
+        )
+
+        GD_x = coefficients_x[..., 1]
+        GD_y = coefficients_y[..., 1]
+
         return GD_x, GD_y
-    
+
     #memory efficient calculations:
     def pulse_front_streaming(
         self,
@@ -824,18 +1112,61 @@ class PolychromaticField:
         dtype=np.complex64,
     ):
         """
-        Compute pulse front t_peak(y,x) without storing I(t,y,x).
+        Compute the pulse front without storing the full time-intensity array.
 
-        This is memory efficient. It loops over time and keeps only the
-        current maximum intensity and its time.
+        This method loops over time samples and keeps only the maximum intensity
+        seen so far and the time at which that maximum occurred. It is therefore
+        much more memory efficient than ``pulse_front_from_time_field``.
+
+        It works for both Cartesian and radial fields.
+
+        Parameters
+        ----------
+        times:
+            1D array of time samples in seconds.
+
+        center_wavelength:
+            Reference vacuum wavelength used to define the carrier frequency.
+            If None, ``self.center_wavelength`` is used.
+
+        use_spectral_phase:
+            If True, reconstruct each spectral component from
+
+                abs(Ex) * exp(1j * spectral_phase_x)
+
+            and similarly for ``Ey``. This is the recommended mode when using
+            unwrapped spectral phase bookkeeping.
+
+            If False, uses the complex field arrays ``Ex`` and ``Ey`` directly.
+
+        threshold:
+            Relative intensity threshold used to mark invalid spatial points.
+            Points where ``I_max < threshold * max(I_max)`` are set to NaN in
+            ``t_peak``.
+
+        dtype:
+            Complex dtype used for the temporary time-domain field. ``complex64``
+            is usually sufficient for pulse-front visualization and reduces memory
+            use.
 
         Returns
         -------
         t_peak:
-            shape (N, N), seconds. Invalid low-intensity pixels are NaN.
+            Pulse-front arrival time at each spatial point, in seconds.
+
+            Shape:
+                - Cartesian Field: ``(N, N)``
+                - RadialField: ``(Nr,)``
 
         I_max:
-            maximum intensity map.
+            Maximum intensity reached at each spatial point.
+
+        Notes
+        -----
+        This method is still coherent: for every time step, it first sums the
+        complex spectral components and only then computes the intensity.
+
+        It avoids storing an array of shape ``(Nt, *field_shape)``.
         """
         times = np.asarray(times, dtype=float)
 
@@ -844,16 +1175,29 @@ class PolychromaticField:
 
         omega0 = 2 * np.pi * c0 / center_wavelength
 
-        N = self.grid.N
+        if len(self.components) == 0:
+            raise ValueError("No spectral components available.")
 
-        I_max = np.full((N, N), -np.inf, dtype=np.float32)
-        t_peak = np.full((N, N), np.nan, dtype=np.float64)
+        field_shape = self.components[0].field.Ex.shape
 
-        # Precompute spectral fields and domegas.
+        I_max = np.full(field_shape, -np.inf, dtype=np.float32)
+        t_peak = np.full(field_shape, np.nan, dtype=np.float64)
+
         spectral_data = []
 
-        for comp in self.components:
+        for i, comp in enumerate(self.components):
             field = comp.field
+
+            if field.Ex.shape != field_shape:
+                raise ValueError(
+                    f"Component {i} Ex shape {field.Ex.shape} does not match {field_shape}."
+                )
+
+            if field.Ey.shape != field_shape:
+                raise ValueError(
+                    f"Component {i} Ey shape {field.Ey.shape} does not match {field_shape}."
+                )
+
             omega = 2 * np.pi * c0 / comp.wavelength
             domega = omega - omega0
 
@@ -866,18 +1210,20 @@ class PolychromaticField:
                 Ex_spec = field.Ex
                 Ey_spec = field.Ey
 
-            spectral_data.append((
-                domega,
-                (amp * Ex_spec).astype(dtype, copy=False),
-                (amp * Ey_spec).astype(dtype, copy=False),
-            ))
+            spectral_data.append(
+                (
+                    domega,
+                    (amp * Ex_spec).astype(dtype, copy=False),
+                    (amp * Ey_spec).astype(dtype, copy=False),
+                )
+            )
 
         for t in times:
-            Ex_t = np.zeros((N, N), dtype=dtype)
-            Ey_t = np.zeros((N, N), dtype=dtype)
+            Ex_t = np.zeros(field_shape, dtype=dtype)
+            Ey_t = np.zeros(field_shape, dtype=dtype)
 
             for domega, Ex_spec, Ey_spec in spectral_data:
-                phase_t = np.exp(-1j * domega * t).astype(dtype)
+                phase_t = np.asarray(np.exp(-1j * domega * t), dtype=dtype)
                 Ex_t += Ex_spec * phase_t
                 Ey_t += Ey_spec * phase_t
 
@@ -887,11 +1233,14 @@ class PolychromaticField:
             I_max[update] = I[update]
             t_peak[update] = t
 
-        # mask pixels where there is no meaningful pulse
-        valid = I_max > threshold * np.nanmax(I_max)
-        t_peak[~valid] = np.nan
+        max_intensity = np.nanmax(I_max)
+
+        if np.isfinite(max_intensity) and max_intensity > 0:
+            valid = I_max > threshold * max_intensity
+            t_peak[~valid] = np.nan
 
         return t_peak, I_max
+    
 
     def pulse_front_streaming_downsampled(
         self,
@@ -903,32 +1252,87 @@ class PolychromaticField:
         dtype=np.complex64,
     ):
         """
-        Memory-efficient pulse front on a downsampled spatial grid.
+        Compute a memory-efficient pulse front on a downsampled Cartesian grid.
+
+        This method is intended for 2D Cartesian fields only. It samples the field
+        on an evenly spaced ``N_out x N_out`` subset of the original grid and then
+        performs a streaming coherent time reconstruction on that subset.
+
+        Parameters
+        ----------
+        times:
+            1D array of time samples in seconds.
+
+        center_wavelength:
+            Reference vacuum wavelength used to define the carrier frequency.
+            If None, ``self.center_wavelength`` is used.
+
+        N_out:
+            Number of output samples per Cartesian dimension.
+
+        use_spectral_phase:
+            If True, reconstruct each spectral component from unwrapped
+            ``spectral_phase_x`` and ``spectral_phase_y``. If False, use the
+            complex field arrays directly.
+
+        threshold:
+            Relative intensity threshold. Points below
+            ``threshold * max(I_max)`` are marked as invalid and set to NaN in
+            ``t_peak``.
+
+        dtype:
+            Complex dtype used for temporary time-domain fields.
 
         Returns
         -------
         t_peak:
-            shape (N_out, N_out)
+            Downsampled pulse-front arrival time, shape ``(N_out, N_out)``.
 
         I_max:
-            shape (N_out, N_out)
+            Maximum intensity map, shape ``(N_out, N_out)``.
 
         X_out, Y_out:
-            coordinate grids, shape (N_out, N_out)
+            Downsampled coordinate grids in meters, both with shape
+            ``(N_out, N_out)``.
+
+        Raises
+        ------
+        TypeError
+            If the underlying fields are not 2D Cartesian fields.
+
+        ValueError
+            If ``N_out`` is larger than the original grid size.
         """
         times = np.asarray(times, dtype=float)
+
+        if len(self.components) == 0:
+            raise ValueError("No spectral components available.")
+
+        first_field = self.components[0].field
+
+        if first_field.Ex.ndim != 2:
+            raise TypeError(
+                "pulse_front_streaming_downsampled is only defined for 2D Cartesian fields."
+            )
+
+        if not hasattr(self.grid, "X") or not hasattr(self.grid, "Y"):
+            raise TypeError("The grid must provide X and Y coordinate arrays.")
 
         if center_wavelength is None:
             center_wavelength = self.center_wavelength
 
         omega0 = 2 * np.pi * c0 / center_wavelength
 
-        N = self.grid.N
+        Ny, Nx = first_field.Ex.shape
+
+        if Ny != Nx:
+            raise ValueError("Only square Cartesian fields are currently supported.")
+
+        N = Ny
 
         if N_out > N:
-            raise ValueError("N_out must be <= grid.N")
+            raise ValueError("N_out must be <= grid size.")
 
-        # choose evenly spaced indices
         y_idx = np.linspace(0, N - 1, N_out).astype(int)
         x_idx = np.linspace(0, N - 1, N_out).astype(int)
 
@@ -940,38 +1344,48 @@ class PolychromaticField:
 
         spectral_data = []
 
-        for comp in self.components:
+        for i, comp in enumerate(self.components):
             field = comp.field
+
+            if field.Ex.shape != (N, N):
+                raise ValueError(
+                    f"Component {i} Ex shape {field.Ex.shape} does not match {(N, N)}."
+                )
+
             omega = 2 * np.pi * c0 / comp.wavelength
             domega = omega - omega0
 
             amp = np.sqrt(comp.weight)
 
+            idx = np.ix_(y_idx, x_idx)
+
             if use_spectral_phase:
                 Ex_spec = (
-                    np.abs(field.Ex[np.ix_(y_idx, x_idx)])
-                    * np.exp(1j * field.spectral_phase_x[np.ix_(y_idx, x_idx)])
+                    np.abs(field.Ex[idx])
+                    * np.exp(1j * field.spectral_phase_x[idx])
                 )
                 Ey_spec = (
-                    np.abs(field.Ey[np.ix_(y_idx, x_idx)])
-                    * np.exp(1j * field.spectral_phase_y[np.ix_(y_idx, x_idx)])
+                    np.abs(field.Ey[idx])
+                    * np.exp(1j * field.spectral_phase_y[idx])
                 )
             else:
-                Ex_spec = field.Ex[np.ix_(y_idx, x_idx)]
-                Ey_spec = field.Ey[np.ix_(y_idx, x_idx)]
+                Ex_spec = field.Ex[idx]
+                Ey_spec = field.Ey[idx]
 
-            spectral_data.append((
-                domega,
-                (amp * Ex_spec).astype(dtype, copy=False),
-                (amp * Ey_spec).astype(dtype, copy=False),
-            ))
+            spectral_data.append(
+                (
+                    domega,
+                    (amp * Ex_spec).astype(dtype, copy=False),
+                    (amp * Ey_spec).astype(dtype, copy=False),
+                )
+            )
 
         for t in times:
             Ex_t = np.zeros((N_out, N_out), dtype=dtype)
             Ey_t = np.zeros((N_out, N_out), dtype=dtype)
 
             for domega, Ex_spec, Ey_spec in spectral_data:
-                phase_t = np.exp(-1j * domega * t).astype(dtype)
+                phase_t = np.asarray(np.exp(-1j * domega * t), dtype=dtype)
                 Ex_t += Ex_spec * phase_t
                 Ey_t += Ey_spec * phase_t
 
@@ -981,110 +1395,237 @@ class PolychromaticField:
             I_max[update] = I[update]
             t_peak[update] = t
 
-        valid = I_max > threshold * np.nanmax(I_max)
-        t_peak[~valid] = np.nan
+        max_intensity = np.nanmax(I_max)
+
+        if np.isfinite(max_intensity) and max_intensity > 0:
+            valid = I_max > threshold * max_intensity
+            t_peak[~valid] = np.nan
 
         return t_peak, I_max, X_out, Y_out
+    
 
     @staticmethod
     def fit_pulse_front(
         pulse_front: np.ndarray,
-        X: np.ndarray,
-        Y: np.ndarray,
+        X: np.ndarray | None = None,
+        Y: np.ndarray | None = None,
+        r: np.ndarray | None = None,
         mask: np.ndarray | None = None,
+        subtract_reference: bool = True,
+        reference_index: tuple[int, int] | int | None = None,
     ) -> dict:
         """
-        Fit relative pulsefront delay to a parabola. PF(x,y) = PF(x,y) - PF(cx,cy) is the relative delay compared to the center point.
-        Then fit pulse front with:
+        Fit a pulse-front delay map to a low-order pulse-front model.
 
-            PF(x,y) = C + PFT_x*x + PFT_y*y + PFC*(x^2 + y^2)
+        This function supports both Cartesian and radial pulse fronts.
+
+        Cartesian model
+        ---------------
+        If ``X`` and ``Y`` are provided, the fitted model is
+
+            PF(x, y) = C + PFT_x*x + PFT_y*y + PFC*(x^2 + y^2)
+
+        where:
+
+            C:
+                Constant delay offset.
+
+            PFT_x:
+                Pulse-front tilt in x.
+
+            PFT_y:
+                Pulse-front tilt in y.
+
+            PFC:
+                Pulse-front curvature.
+
+        Radial model
+        ------------
+        If ``r`` is provided, the fitted model is
+
+            PF(r) = C + PFC*r^2
+
+        This is the correct reduced model for cylindrically symmetric systems.
 
         Parameters
         ----------
         pulse_front:
-            2D pulse-front delay array, usually in seconds.
+            Pulse-front delay array in seconds.
+
+            Shape:
+                - Cartesian: ``(N, N)``
+                - Radial: ``(Nr,)``
 
         X, Y:
-            2D coordinate arrays in meters, usually grid.X and grid.Y.
+            Cartesian coordinate arrays in meters. Required for Cartesian fitting.
+
+        r:
+            Radial coordinate array in meters. Required for radial fitting.
 
         mask:
-            Optional boolean mask. True values are included in the fit.
-            Useful for fitting only inside the beam/aperture.
+            Optional boolean mask. Only points where ``mask`` is True are included
+            in the fit.
+
+        subtract_reference:
+            If True, subtracts a reference delay before fitting. This removes the
+            absolute group delay and fits only the relative pulse-front shape.
+
+        reference_index:
+            Index used for the reference subtraction.
+
+            If None:
+                - Cartesian: uses the center pixel.
+                - Radial: uses index 0.
 
         Returns
         -------
         result:
-            Dictionary containing:
-                C:
-                    Constant delay offset [same unit as pulse_front]
+            Dictionary containing the fitted coefficients and diagnostic arrays.
 
-                PFT_x:
-                    Pulse-front tilt in x [pulse_front unit / m]
+            Cartesian result keys:
+                ``C``, ``PFT_x``, ``PFT_y``, ``PFC``, ``fitted``,
+                ``residual``, ``coefficients``, ``rank``, ``singular_values``
 
-                PFT_y:
-                    Pulse-front tilt in y [pulse_front unit / m]
+            Radial result keys:
+                ``C``, ``PFC``, ``fitted``, ``residual``, ``coefficients``,
+                ``rank``, ``singular_values``
 
-                PFC:
-                    Pulse-front curvature [pulse_front unit / m^2]
+        Units
+        -----
+        If coordinates are given in meters and ``pulse_front`` is in seconds:
 
-                fitted:
-                    Fitted 2D pulse-front array
+            PFT_x, PFT_y:
+                s / m
 
-                residual:
-                    pulse_front - fitted
+            PFC:
+                s / m^2
 
-                coefficients:
-                    Array [C, PFT_x, PFT_y, PFC]
+        Convert PFC to fs/mm^2 by
+
+            PFC_fs_per_mm2 = PFC * 1e15 * 1e-6
         """
         pulse_front = np.asarray(pulse_front, dtype=float)
-        X = np.asarray(X, dtype=float)
-        Y = np.asarray(Y, dtype=float)
-        pulse_front_rel = pulse_front - pulse_front[X.shape[0] // 2, Y.shape[1] // 2]
 
-        if pulse_front_rel.shape != X.shape or pulse_front_rel.shape != Y.shape:
-            raise ValueError("pulse_front, X, and Y must have the same shape.")
+        if (X is not None or Y is not None) and r is not None:
+            raise ValueError("Provide either X/Y for Cartesian fit or r for radial fit, not both.")
 
-        if mask is None:
-            valid = np.isfinite(pulse_front_rel) & np.isfinite(X) & np.isfinite(Y)
-        else:
-            mask = np.asarray(mask, dtype=bool)
-            if mask.shape != pulse_front_rel.shape:
-                raise ValueError("mask must have the same shape as pulse_front.")
-            valid = mask & np.isfinite(pulse_front_rel) & np.isfinite(X) & np.isfinite(Y)
+        if X is not None or Y is not None:
+            if X is None or Y is None:
+                raise ValueError("Both X and Y must be provided for Cartesian fitting.")
 
-        x = X[valid]
-        y = Y[valid]
-        pf = pulse_front_rel[valid]
+            X = np.asarray(X, dtype=float)
+            Y = np.asarray(Y, dtype=float)
 
-        if pf.size < 4:
-            raise ValueError("Need at least 4 valid points to fit pulse front.")
+            if pulse_front.shape != X.shape or pulse_front.shape != Y.shape:
+                raise ValueError("pulse_front, X, and Y must have the same shape.")
 
-        A = np.column_stack([
-            np.ones_like(x),
-            x,
-            y,
-            x**2 + y**2,
-        ])
+            pf = pulse_front.copy()
 
-        coeffs, residuals, rank, singular_values = np.linalg.lstsq(A, pf, rcond=None)
+            if subtract_reference:
+                if reference_index is None:
+                    reference_index = (pf.shape[0] // 2, pf.shape[1] // 2)
 
-        C, PFT_x, PFT_y, PFC = coeffs
+                pf = pf - pf[reference_index]
 
-        fitted = C + PFT_x * X + PFT_y * Y + PFC * (X**2 + Y**2)
-        residual = pulse_front_rel - fitted
+            if mask is None:
+                valid = np.isfinite(pf) & np.isfinite(X) & np.isfinite(Y)
+            else:
+                mask = np.asarray(mask, dtype=bool)
+                if mask.shape != pf.shape:
+                    raise ValueError("mask must have the same shape as pulse_front.")
+                valid = mask & np.isfinite(pf) & np.isfinite(X) & np.isfinite(Y)
 
-        return {
-            "C": C,
-            "PFT_x": PFT_x,
-            "PFT_y": PFT_y,
-            "PFC": PFC,
-            "fitted": fitted,
-            "residual": residual,
-            "coefficients": coeffs,
-            "rank": rank,
-            "singular_values": singular_values,
-        }
-        
+            x = X[valid]
+            y = Y[valid]
+            tau = pf[valid]
+
+            if tau.size < 4:
+                raise ValueError("Need at least 4 valid points for Cartesian pulse-front fit.")
+
+            A = np.column_stack(
+                [
+                    np.ones_like(x),
+                    x,
+                    y,
+                    x**2 + y**2,
+                ]
+            )
+
+            coeffs, residuals, rank, singular_values = np.linalg.lstsq(A, tau, rcond=None)
+
+            C, PFT_x, PFT_y, PFC = coeffs
+
+            fitted = C + PFT_x * X + PFT_y * Y + PFC * (X**2 + Y**2)
+            residual = pf - fitted
+
+            return {
+                "mode": "cartesian",
+                "C": C,
+                "PFT_x": PFT_x,
+                "PFT_y": PFT_y,
+                "PFC": PFC,
+                "fitted": fitted,
+                "residual": residual,
+                "coefficients": coeffs,
+                "rank": rank,
+                "singular_values": singular_values,
+            }
+
+        if r is not None:
+            r = np.asarray(r, dtype=float)
+
+            if pulse_front.shape != r.shape:
+                raise ValueError("pulse_front and r must have the same shape.")
+
+            pf = pulse_front.copy()
+
+            if subtract_reference:
+                if reference_index is None:
+                    reference_index = 0
+
+                pf = pf - pf[reference_index]
+
+            if mask is None:
+                valid = np.isfinite(pf) & np.isfinite(r)
+            else:
+                mask = np.asarray(mask, dtype=bool)
+                if mask.shape != pf.shape:
+                    raise ValueError("mask must have the same shape as pulse_front.")
+                valid = mask & np.isfinite(pf) & np.isfinite(r)
+
+            rr = r[valid]
+            tau = pf[valid]
+
+            if tau.size < 2:
+                raise ValueError("Need at least 2 valid points for radial pulse-front fit.")
+
+            A = np.column_stack(
+                [
+                    np.ones_like(rr),
+                    rr**2,
+                ]
+            )
+
+            coeffs, residuals, rank, singular_values = np.linalg.lstsq(A, tau, rcond=None)
+
+            C, PFC = coeffs
+
+            fitted = C + PFC * r**2
+            residual = pf - fitted
+
+            return {
+                "mode": "radial",
+                "C": C,
+                "PFC": PFC,
+                "fitted": fitted,
+                "residual": residual,
+                "coefficients": coeffs,
+                "rank": rank,
+                "singular_values": singular_values,
+            }
+
+        raise ValueError("Provide either X/Y for Cartesian fitting or r for radial fitting.")
+    
     
     def plot_pulse_front_to_fig(self, pulsefront_data, fig:Figure):
         from matplotlib import cm
