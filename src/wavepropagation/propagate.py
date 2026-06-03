@@ -1,8 +1,8 @@
 import numpy as np
-from .field import Field
-from .grid import Grid
+from .field import Field, RadialField
 from .utils import resample_real_array, resample_complex_array, pad_array_centered, padded_grid_like
 from scipy.signal import czt
+from .hankelBackend import DirectHankelBackend
 
 class Propagate_base:
     def __init__(self, z: float, add_to_spectral_phase: bool = True):
@@ -330,4 +330,124 @@ class FresnelPropagate(Propagate_base):
         if self.add_to_spectral_phase:
             out.spectral_phase_x += field.k * self.z
             out.spectral_phase_y += field.k * self.z
+        return out
+    
+
+#1d propagators can be added here as well, e.g. for radially symmetric fields.
+class HankelAngularSpectrumPropagate(Propagate_base):
+    """
+    Cylindrically symmetric angular-spectrum propagator.
+
+    This propagator is the radial/Hankel-transform equivalent of the Cartesian
+    angular-spectrum propagator.
+
+    It assumes cylindrical symmetry:
+
+        E(x, y) = E(r)
+
+    with
+
+        r = sqrt(x^2 + y^2)
+
+    The propagation is performed as
+
+        E(r, z) = H0^{-1}[
+                     H0[E(r, 0)] * exp(i * kz * z)
+                 ]
+
+    where H0 is the zeroth-order Hankel transform and
+
+        kz = sqrt(k^2 - kr^2)
+
+    Parameters
+    ----------
+    z:
+        Propagation distance in meters.
+
+    backend:
+        Hankel transform backend. It must provide:
+
+            backend.kr
+            backend.forward(E_r)
+            backend.inverse(E_kr)
+
+        For initial testing use DirectHankelBackend.
+
+    add_to_spectral_phase:
+        If True, adds the on-axis propagation phase k*z to
+        spectral_phase_x and spectral_phase_y.
+
+        If you want to exclude constant air propagation from GD bookkeeping,
+        set this to False for air-only propagation.
+    """
+
+    def __init__(
+        self,
+        z: float,
+        backend,
+        add_to_spectral_phase: bool = True,
+    ):
+        super().__init__(z)
+        self.backend = backend
+        self.add_to_spectral_phase = bool(add_to_spectral_phase)
+
+    def _propagate_component(
+        self,
+        E_r: np.ndarray,
+        k: float,
+    ) -> np.ndarray:
+        """
+        Propagate one radial complex field component.
+
+        Parameters
+        ----------
+        E_r:
+            Complex radial field, shape (Nr,).
+
+        k:
+            Medium wavenumber, k = 2*pi*n/lambda0.
+
+        Returns
+        -------
+        E_out:
+            Propagated radial field, shape (Nr,).
+        """
+        kr = self.backend.kr
+
+        kz = np.sqrt((k**2 - kr**2) + 0j)
+        H = np.exp(1j * kz * self.z)
+
+        E_kr = self.backend.forward(E_r)
+        E_out = self.backend.inverse(E_kr * H)
+
+        return E_out
+
+    def apply(self, field: RadialField) -> RadialField:
+        """
+        Apply Hankel angular-spectrum propagation to a RadialField.
+
+        Parameters
+        ----------
+        field:
+            RadialField to propagate.
+
+        Returns
+        -------
+        out:
+            Propagated RadialField on the same radial grid.
+        """
+        if not isinstance(field, RadialField):
+            raise TypeError(
+                "HankelAngularSpectrumPropagate requires a RadialField."
+            )
+
+        out = field.copy()
+
+        out.Ex = self._propagate_component(field.Ex, field.k)
+        out.Ey = self._propagate_component(field.Ey, field.k)
+
+        if self.add_to_spectral_phase:
+            out.spectral_phase_x += field.k * self.z
+            out.spectral_phase_y += field.k * self.z
+
         return out

@@ -1,22 +1,23 @@
 from wavepropagation.field import Field
 from wavepropagation.grid import Grid
-from wavepropagation.sources import PolychromaticSource, MonochromaticSource
+from wavepropagation.sources.source2d import polychromaticSource
+from wavepropagation.sources.spectralUtils import gaussian_spectrum_omega
 from wavepropagation.opticalSystem import OpticalSystem
-from wavepropagation.elements import *
+from wavepropagation.elements import IdealChromaticLens, PhaseGrating, CircularAperture
 from wavepropagation.propagate import AngularSpectrumPropagate as Propagate
+from wavepropagation.materials.materials import BK7, AIR
 import matplotlib.pyplot as plt
 
 def main():
     grid = Grid(N=1012, L=10e-3)
-    spec = PolychromaticSource.SpectralUtils.gaussian_spectrum(center_wavelength=550e-9, fwhm=200e-9, num=15)
-    poly_field = PolychromaticSource.polychromatic_bessel_beam(
+    spec = gaussian_spectrum_omega(center_wavelength=550e-9, fwhm_wavelength_approx=200e-9, num=15)
+    poly_field = polychromaticSource.polychromatic_bessel_beam(
         grid=grid,
-        wavelengths=spec.wavelengths,
-        weights=spec.weights,
+        from_spectrum=spec,
         kr=None,
         envelope_waist=None,
         polarization=(1.0, 0.0),
-        n_medium=1.0,
+        n_medium=AIR.n_function,
         n_axicon=1.3,
         axicon_half_angle=89.5
     )
@@ -45,7 +46,7 @@ def main():
         #CircularAperture(radius=100e-6),Propagate(0.1)
         Propagate(z=0.02),
        # PhaseGrating(20e-5,ChromaticLens.linear_dispersion(0.7,100)),
-        ChromaticLens(f0=.7,dispersion=ChromaticLens.linear_dispersion(0.7,3e4)), Propagate(0.69), Propagate(0.01), Propagate(0.01)
+        IdealChromaticLens(f0=.7, n_material=BK7.n_function), Propagate(0.69), Propagate(0.01), Propagate(0.01)
         ])
 
     field_out, hist = system.run(poly_field, keep_history=True)

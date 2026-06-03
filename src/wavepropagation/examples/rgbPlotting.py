@@ -1,5 +1,6 @@
 from wavepropagation.spectrum import PolychromaticField as poly_field
-from wavepropagation.sources import PolychromaticSource as PS
+import wavepropagation.sources.source2d.polychromaticSource as PS
+from wavepropagation.sources.spectralUtils import gaussian_spectrum_omega
 from wavepropagation.propagate import FresnelPropagate as Propagate
 from wavepropagation.elements import *
 from wavepropagation.grid import Grid
@@ -8,11 +9,10 @@ import numpy as np
 from wavepropagation.opticalSystem import OpticalSystem
 
 grid = Grid(N=1512, L=16e-3)
-spec = PS.SpectralUtils.gaussian_spectrum(center_wavelength=550e-9, fwhm=150e-9, num=17)
+spec = gaussian_spectrum_omega(center_wavelength=550e-9, fwhm_wavelength_approx=200e-9, num=17)
 poly_field = PS.polychromatic_gaussian_beam(
     grid=grid,
-    wavelengths=spec.wavelengths,
-    weights=spec.weights,
+    from_spectrum=spec,
     w0=1.5e-3
 )
 

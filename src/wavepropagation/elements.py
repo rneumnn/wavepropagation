@@ -1,8 +1,8 @@
-from .field import Field
+from .field import Field, RadialField, FieldBase
 import numpy as np
 from scipy.constants import c, pi
 from .materials.materialCore import RefractiveIndexFunction
-from .propagate import Propagate_base, AngularSpectrumPropagate
+
 
 class element_base:
     """
@@ -10,9 +10,16 @@ class element_base:
     """
     debug = True
     def __init__(self):
+        self.name = "BaseElement"
+        self.description = "Base class for optical elements. Subclasses should implement the apply method."
+        self.radial_symmetric = False
         return
+    
+    def _radial_symmetric_check(self, field:Field|RadialField):
+        if not self.radial_symmetric and isinstance(field, RadialField):
+            raise ValueError(f"{self.name} is not a radial symmetric element and cannot be applied to RadialField instances.")
 
-    def apply(self, field:Field)->Field:
+    def apply(self, field:Field|RadialField)->Field|RadialField:
         raise NotImplementedError("Subclasses should implement this method.")
     
 #Lenses
@@ -24,6 +31,9 @@ class Lens(element_base):
     """
     def __init__(self, f0: float):
         self.f0 = f0
+        self.radial_symmetric = True
+        self.name = "ThinLens"
+        self.description = f"Thin lens with focal length {f0} m. No chromatic aberration."
 
     def focal_length(self, wavelength: float) -> float:
             # For a simple thin lens, the focal length is independent of wavelength.
@@ -31,11 +41,11 @@ class Lens(element_base):
             # implement as new class if needed
         return self.f0
 
-    def apply(self, field: Field) -> Field:
+    def apply(self, field: Field|RadialField) -> Field|RadialField:
+        self._radial_symmetric_check(field)
         g = field.grid
         f = self.focal_length(field.wavelength)
-        phase = np.exp(-1j * field.k * (g.X**2 + g.Y**2) / (2 * f))
-
+        phase = np.exp(-1j * field.k * g.R**2 / (2 * f))
         out = field.copy()
         out.Ex *= phase
         out.Ey *= phase
@@ -46,22 +56,26 @@ class IdealChromaticLens(Lens):
     A lens with a wavelength-dependent focal length to model chromatic aberration. The focal length is defined by a simple dispersion relation, but can be modified to fit specific materials or designs.
     The material phase dont properly behaves. Only supposed to use for chromatic aberration, not for modeling real lenses with material phase. For that use the RealLens class.
     """
-    def __init__(self, f0: float, n_wl: RefractiveIndexFunction, ref_wavelength: float = 550e-9):
+    def __init__(self, f0: float, n_material: RefractiveIndexFunction, ref_wavelength: float = 550e-9):
         super().__init__(f0)
-        if callable(n_wl):
-            self.n_ref = n_wl(ref_wavelength) 
-            self.n_wl = n_wl
+        self.name = "IdealChromaticLens"
+        self.description = f"Thin lens with wavelength-dependent focal length to model chromatic aberration. Focal length at reference wavelength {ref_wavelength*1e9} nm is {f0} m. Refractive index function n(wavelength) is used to calculate the focal length dispersion."
+        self.radial_symmetric = True
+        if callable(n_material):
+            self.n_ref = n_material(ref_wavelength)
+            self.n_material = n_material
         else:
-            raise ValueError("n_wl must be a callable function of wavelength")
+            raise ValueError("n_material must be a callable function of wavelength")
     
     def focal_length(self, wavelength: float) -> float:
-        f = self.f0 * ((self.n_ref-1)/(self.n_wl(wavelength)-1))
+        f = self.f0 * ((self.n_ref-1)/(self.n_material(wavelength)-1))
         return f
 
-    def apply(self, field:Field):
+    def apply(self, field:Field|RadialField):
+        self._radial_symmetric_check(field)
         g = field.grid
         f = self.focal_length(field.wavelength)
-        phi = field.k * (g.X**2 + g.Y**2) / (2 * f)
+        phi = field.k * g.R**2 / (2 * f)
         phase = np.exp(-1j * phi)
         out = field.copy()
         out.Ex *= phase
@@ -81,6 +95,7 @@ class IdealChromaticLens(Lens):
     #         return 1 + slope * (wavelength - 550e-9)  # 550 nm is a common reference wavelength
     #     return dispersion
     
+    ###### hier weiter machen mit radsymm implementation
 class ThinRealLens(element_base):
     """
     Implements a realistic lens by given radius of curvature and refractive index. The focal length is calculated using the lensmaker's formula, which can be used to model chromatic aberration if the refractive index is wavelength-dependent.
@@ -98,6 +113,9 @@ class ThinRealLens(element_base):
     surfaceFunction: callable or None - Custom function to define the lens surface shape
     """
     def __init__(self, R1:float = 0, R2:float = 0, center_thickness:float = 0, relative_aperture:float = 1, n:RefractiveIndexFunction = 1, n_environment:float|RefractiveIndexFunction = 1, surfaceFunction = None):
+        self.name = "ThinRealLens"
+        self.description = f"Thin lens with realistic material phase. R1={R1} m, R2={R2} m, center thickness={center_thickness} m, relative aperture={relative_aperture}, n={n}, n_environment={n_environment}. Surface function can be provided for custom lens shapes, otherwise spherical surfaces are used based on R1 and R2."
+        self.radial_symmetric = True
         self.R1 = R1
         self.R2 = R2
         self.center_thickness = center_thickness
@@ -111,7 +129,7 @@ class ThinRealLens(element_base):
         else:
             self._calculate_thicknessfunction()
 
-    def lens_phase_sampling_check(self, field:Field, safety = 1.0):
+    def lens_phase_sampling_check(self, field:Field|RadialField, safety = 1.0):
         """ 
         Checks the phase sampling of the lens phase to ensure that it is adequately sampled to avoid artifacts.
         It calculates the maximum phase step across the lens and compares it to the Nyquist limit (pi radians) and a user-defined safety factor.
@@ -171,15 +189,15 @@ class ThinRealLens(element_base):
             self.thickness_function = self.surfaceFunction
         else:
             #surfaces with curvature according to optical conventions, center of the surfaces are translated to z = 0
-            S1 = lambda x,y: (self.R1 - np.sign(self.R1) * np.sqrt(self.R1**2 - x**2 - y**2)) if self.R1 != 0 else (x+y)*0
-            S2 = lambda x,y: (self.R2 - np.sign(self.R2) * np.sqrt(self.R2**2 - x**2 - y**2)) if self.R2 != 0 else (x+y)*0
+            S1 = lambda r: (self.R1 - np.sign(self.R1) * np.sqrt(self.R1**2 - r**2)) if self.R1 != 0 else r*0
+            S2 = lambda r: (self.R2 - np.sign(self.R2) * np.sqrt(self.R2**2 - r**2)) if self.R2 != 0 else r*0
             #automatically clipping the surface when intersection occures
-            t = lambda x,y: np.nan_to_num(np.clip(self.center_thickness - S1(x,y) + S2(x,y), 0, None))
+            t = lambda r: np.nan_to_num(np.clip(self.center_thickness - S1(r) + S2(r), 0, None))
             self.thickness_function = t
             if get_surface_functions:
                 return S1, S2
             
-    def calculate_material_phase(self, field: Field) -> np.ndarray:
+    def calculate_material_phase(self, field: Field|RadialField) -> np.ndarray:
         """
         Builds the full material phase aquired during the longitudinal space ocupied by the lens.
         The phase accumulated by the environment gets included aswell. Therefore the lens space is modelled as a box
@@ -188,7 +206,7 @@ class ThinRealLens(element_base):
         grid_dim = field.grid.L
         #calculate aperture array
         lens_aperture_array = np.where(field.grid.R <= self.aperture * grid_dim / 2, 1, 0)
-        lens_thickness = self.thickness_function(field.grid.X, field.grid.Y)*lens_aperture_array
+        lens_thickness = self.thickness_function(field.grid.R)*lens_aperture_array
         max_thickness = np.max(lens_thickness)
         self.n_environment = field.n_medium
         n_lens = self.n(field.wavelength) if callable(self.n) else self.n
@@ -209,8 +227,9 @@ class ThinRealLens(element_base):
         x = np.linspace(*x_range, 200)
         y = np.linspace(*y_range, 200)
         X, Y = np.meshgrid(x, y)
-        aperture = np.where(np.sqrt((np.power(X,2)+np.power(Y,2)))/np.sqrt((np.max(X)**2+np.max(Y)**2))<=self.aperture, 1, 0)
-        Z = self.thickness_function(X, Y)*aperture
+        R = np.sqrt((np.power(X,2)+np.power(Y,2)))
+        aperture = np.where(R/np.sqrt((np.max(X)**2+np.max(Y)**2))<=self.aperture, 1, 0)
+        Z = self.thickness_function(R)*aperture
 
         p1 = axs[0].contourf(X * 1e3, Y * 1e3, Z * 1e3, levels=250, cmap='viridis')
         plt.colorbar(p1, label='Thickness (mm)')
@@ -220,8 +239,8 @@ class ThinRealLens(element_base):
         axs[0].axis('equal')
 
         s1, s2 = self._calculate_thicknessfunction(get_surface_functions=True)
-        axs[1].plot(x * 1e3, s1(x, np.zeros_like(x)) * 1e3, label='Surface 1')  # Plot a cross-section
-        axs[1].plot(x * 1e3, s2(x, np.zeros_like(x)) * 1e3 + self.center_thickness*1e3, label='Surface 2')  # Plot a cross-section
+        axs[1].plot(x * 1e3, s1(x) * 1e3, label='Surface 1')  # Plot a cross-section, x = r
+        axs[1].plot(x * 1e3, s2(x) * 1e3 + self.center_thickness*1e3, label='Surface 2')  # Plot a cross-section
         axs[1].set_xlabel('x (mm)')
         axs[1].set_ylabel('z (mm)')
         axs[1].axis('equal')
@@ -229,7 +248,8 @@ class ThinRealLens(element_base):
         axs[1].legend()
         plt.show()
 
-    def apply(self, field: Field) -> Field:
+    def apply(self, field: Field|RadialField) -> Field:
+        self._radial_symmetric_check(field)
         self.n_environment = field.n_medium
         #f = self.focal_length(field.wavelength)
         phase_lens, phase_environment = self.calculate_material_phase(field)
@@ -242,7 +262,7 @@ class ThinRealLens(element_base):
         out.spectral_phase_y += phase
         return out
     
-class ThickRealLens:
+class ThickRealLens(element_base):
     """
     Scalar split-step thick lens model.
 
@@ -278,6 +298,7 @@ class ThickRealLens:
         n,
         n_environment=None,
         n_slices: int = 64,
+        hankel_backend=None
     ):
         """
         Parameters
@@ -309,6 +330,9 @@ class ThickRealLens:
 
         n_slices:
             Number of longitudinal slices.
+        
+        hankel_backend:
+            Optional Hankel transform backend for radially symmetric fields.
         """
         self.R1 = R1
         self.R2 = R2
@@ -317,7 +341,10 @@ class ThickRealLens:
         self.n = n
         self.n_environment = n_environment
         self.n_slices = int(n_slices)
-
+        self.name = "ThickRealLens"
+        self.description = f"Thick lens model with curved surfaces, finite thickness, material dispersion, and surrounding medium. R1={R1} m, R2={R2} m, center thickness={center_thickness} m, relative aperture={relative_aperture}, n={n}, n_environment={n_environment}, n_slices={n_slices}."
+        self.radial_symmetric = True
+        self.hankel_backend = hankel_backend
         if self.n_slices <= 0:
             raise ValueError("n_slices must be positive.")
 
@@ -336,7 +363,7 @@ class ThickRealLens:
         return self._n_value(self.n_environment, field.wavelength)
 
     @staticmethod
-    def spherical_sag(R: float, X: np.ndarray, Y: np.ndarray) -> np.ndarray:
+    def spherical_sag(R: float, r: np.ndarray) -> np.ndarray:
         """
         Spherical sag function.
 
@@ -351,15 +378,14 @@ class ThickRealLens:
         Outside that region, NaN is returned.
         """
         if R == 0:
-            return np.zeros_like(X, dtype=float)
+            return np.zeros_like(r, dtype=float)
 
-        r2 = X**2 + Y**2
         R2 = R**2
 
-        sag = np.full_like(X, np.nan, dtype=float)
+        sag = np.full_like(r, np.nan, dtype=float)
 
-        valid = r2 <= R2
-        sag[valid] = R - np.sign(R) * np.sqrt(R2 - r2[valid])
+        valid = r**2 <= R2
+        sag[valid] = R - np.sign(R) * np.sqrt(R2 - np.power(r, 2)[valid])
 
         return sag
 
@@ -373,10 +399,10 @@ class ThickRealLens:
         The second surface is shifted by center_thickness.
         """
         g = field.grid
-        X, Y = g.X, g.Y
+        r = g.R
 
-        z1 = self.spherical_sag(self.R1, X, Y)
-        z2 = self.center_thickness + self.spherical_sag(self.R2, X, Y)
+        z1 = self.spherical_sag(self.R1, r)
+        z2 = self.center_thickness + self.spherical_sag(self.R2, r)
 
         return z1, z2
 
@@ -424,15 +450,81 @@ class ThickRealLens:
 
     def _propagate_homogeneous(
         self,
+        field: FieldBase,
+        dz: float,
+        n_medium: float,
+    ) -> FieldBase:
+        """
+        Homogeneous angular-spectrum propagation through a medium.
+
+        This method supports both Cartesian and radially symmetric fields.
+
+        For a Cartesian ``Field`` it uses the ordinary 2D FFT angular-spectrum
+        method.
+
+        For a ``RadialField`` it uses the zeroth-order Hankel angular-spectrum
+        method through ``self.hankel_backend``.
+
+        The medium wavenumber is
+
+            k = 2*pi*n_medium/lambda_vac
+
+        Parameters
+        ----------
+        field:
+            Input field. Must be either ``Field`` or ``RadialField``.
+
+        dz:
+            Propagation distance in meters.
+
+        n_medium:
+            Refractive index of the homogeneous propagation medium.
+
+        Returns
+        -------
+        out:
+            Propagated field of the same class as ``field``.
+
+        Notes
+        -----
+        The complex field propagation is fully spatially resolved.
+
+        The update of ``spectral_phase_x`` and ``spectral_phase_y`` only adds the
+        on-axis phase ``k*dz``. It is bookkeeping for spectral phase / GD / GDD
+        analysis and is not the full transverse angular-spectrum phase.
+        """
+        if dz == 0:
+            out = field.copy()
+            out.n_medium = n_medium
+            return out
+
+        if isinstance(field, Field):
+            return self._propagate_homogeneous_cartesian(
+                field=field,
+                dz=dz,
+                n_medium=n_medium,
+            )
+
+        if isinstance(field, RadialField):
+            return self._propagate_homogeneous_radial(
+                field=field,
+                dz=dz,
+                n_medium=n_medium,
+            )
+
+        raise TypeError(
+            "_propagate_homogeneous requires Field or RadialField, "
+            f"got {type(field).__name__}."
+        )
+    
+    def _propagate_homogeneous_cartesian(
+        self,
         field: Field,
         dz: float,
         n_medium: float,
     ) -> Field:
         """
-        Homogeneous angular-spectrum propagation through a medium.
-
-        Uses the medium wavenumber:
-            k = 2*pi*n_medium/lambda_vac
+        Homogeneous angular-spectrum propagation for a Cartesian 2D Field.
         """
         g = field.grid
         wl = field.wavelength
@@ -443,20 +535,57 @@ class ThickRealLens:
         H = np.exp(1j * kz * dz)
 
         out = field.copy()
+
         out.Ex = np.fft.ifft2(np.fft.fft2(field.Ex) * H)
         out.Ey = np.fft.ifft2(np.fft.fft2(field.Ey) * H)
 
-        # On-axis unwrapped phase bookkeeping.
-        # This is not the full kx,ky-dependent angular-spectrum phase.
         out.spectral_phase_x += k * dz
         out.spectral_phase_y += k * dz
 
-        # Keep field medium consistent after homogeneous propagation.
+        out.n_medium = n_medium
+
+        return out
+    
+    def _propagate_homogeneous_radial(
+        self,
+        field: RadialField,
+        dz: float,
+        n_medium: float,
+    ) -> RadialField:
+        """
+        Homogeneous angular-spectrum propagation for a cylindrically symmetric
+        RadialField using a zeroth-order Hankel transform backend.
+        """
+        if not hasattr(self, "hankel_backend") or self.hankel_backend is None:
+            raise ValueError(
+                "Radial homogeneous propagation requires self.hankel_backend. "
+                "Set it in the ThickRealLens constructor or pass it before applying."
+            )
+        hbe = self.hankel_backend(radial_grid=field.grid)
+        wl = field.wavelength
+        k = 2 * np.pi * n_medium / wl
+
+        kr = hbe.kr
+        kz = np.sqrt((k**2 - kr**2) + 0j)
+        H = np.exp(1j * kz * dz)
+
+        out = field.copy()
+
+        Ex_kr = hbe.forward(field.Ex)
+        Ey_kr = hbe.forward(field.Ey)
+
+        out.Ex = hbe.inverse(Ex_kr * H)
+        out.Ey = hbe.inverse(Ey_kr * H)
+
+        out.spectral_phase_x += k * dz
+        out.spectral_phase_y += k * dz
+
         out.n_medium = n_medium
 
         return out
 
     def apply(self, field: Field) -> Field:
+        self._radial_symmetric_check(field)
         g = field.grid
         wl = field.wavelength
 
@@ -544,12 +673,14 @@ class ThickRealLens:
 
         return out
 
-    def plot_geometry(self, field: Field):
+    def plot_geometry(self, field: FieldBase):
         """
         Plot lens surfaces and thickness for debugging.
         """
         import matplotlib.pyplot as plt
-
+        if field.is_radial:
+            raise NotImplementedError("plot_geometry is not yet implemented for radial fields.")
+        
         g = field.grid
         z1, z2 = self.surfaces(field)
         t = self.thickness(field)
@@ -584,7 +715,7 @@ class ThickRealLens:
 
         plt.tight_layout()
         plt.show()
-class PhaseGrating:
+class PhaseGrating(element_base):
     def __init__(
         self,
         period: float,
@@ -601,6 +732,9 @@ class PhaseGrating:
         self.modulation = modulation
         self.angle = angle
         self.phase0 = phase0
+        self.name = "PhaseGrating"
+        self.description = f"Phase grating with period {period} m, modulation {modulation} rad, angle {angle} rad, and phase offset {phase0} rad."
+        self.radial_symmetric = False
 
     def modulation_at(self, wavelength: float) -> float:
         if callable(self.modulation):
@@ -608,6 +742,7 @@ class PhaseGrating:
         return float(self.modulation)
 
     def apply(self, field: Field) -> Field:
+        self._radial_symmetric_check(field)
         g = field.grid
         U = g.X * np.cos(self.angle) + g.Y * np.sin(self.angle)
 
@@ -620,11 +755,8 @@ class PhaseGrating:
         out.Ey *= t
         return out
     
-import numpy as np
-from .field import Field
 
-
-class ReliefPhaseGrating:
+class ReliefPhaseGrating(element_base):
     def __init__(
         self,
         period: float,
@@ -659,6 +791,9 @@ class ReliefPhaseGrating:
         self.phase0 = phase0
         self.profile = profile
         self.duty_cycle = duty_cycle
+        self.name = "ReliefPhaseGrating"
+        self.description = f"Relief phase grating with period {period} m, height {height} m, n_grating {n_grating}, n_env {n_env}, angle {angle} rad, phase offset {phase0} rad, profile {profile}, and duty cycle {duty_cycle}."
+        self.radial_symmetric = False
 
     def refractive_index_at(self, wavelength: float) -> float:
         if callable(self.n_grating):
@@ -682,7 +817,8 @@ class ReliefPhaseGrating:
 
         raise ValueError(f"Unknown profile: {self.profile}")
 
-    def apply(self, field: Field) -> Field:
+    def apply(self, field: FieldBase) -> Field:
+        self._radial_symmetric_check(field)
         n_g = self.refractive_index_at(field.wavelength)
         h = self.height_profile(field)
 
@@ -702,8 +838,12 @@ class Polarizer(element_base):
     """
     def __init__(self, theta: float):
         self.theta = theta
+        self.name = "Polarizer"
+        self.description = f"Linear polarizer with transmission axis at {theta} radians."
+        self.radial_symmetric = True
 
-    def apply(self, field: Field):
+    def apply(self, field: FieldBase) -> FieldBase:
+        self._radial_symmetric_check(field)
         c = np.cos(self.theta)
         s = np.sin(self.theta)
 
@@ -730,15 +870,18 @@ class WavePlate(element_base):
         """
         self.theta = theta
         self.retardance = retardance
+        self.name = "WavePlate"
+        self.description = f"Wave plate with fast axis at {theta} radians and retardance {retardance} radians."
+        self.radial_symmetric = True
 
-    def apply(self, field: Field):
+    def apply(self, field: FieldBase):
         """
         needs to be rechecked for the right formular!!!! do it when adding jones formalism to field!
         Parameters
             :param field: 
             :type field: _type_
         """
-
+        self._radial_symmetric_check(field)
         c = np.cos(self.theta)
         s = np.sin(self.theta)
         e = np.exp(1j * self.retardance)
@@ -760,11 +903,15 @@ class WavePlate(element_base):
 class HalfWavePlate(WavePlate):
     def __init__(self, theta: float):
         super().__init__(theta, retardance=np.pi)
+        self.name = "HalfWavePlate"
+        self.description = f"Half-wave plate with fast axis at {theta} radians."
 
 
 class QuarterWavePlate(WavePlate):
     def __init__(self, theta: float):
         super().__init__(theta, retardance=np.pi/2)
+        self.name = "QuarterWavePlate"
+        self.description = f"Quarter-wave plate with fast axis at {theta} radians."
 
 class CircularAperture(element_base):
     def __init__(
@@ -785,8 +932,11 @@ class CircularAperture(element_base):
         self.radius = float(radius)
         self.smoothness = float(smoothness)
         self.edge_level = float(edge_level)
+        self.name = "CircularAperture"
+        self.description = f"Circular aperture with radius {radius} and smoothness {smoothness}."
+        self.radial_symmetric = True
 
-    def transmission(self, field: Field) -> np.ndarray:
+    def transmission(self, field: FieldBase) -> np.ndarray:
         r = field.grid.R
 
         if self.smoothness <= 0:
@@ -814,7 +964,7 @@ class CircularAperture(element_base):
 
         return mask
 
-    def apply(self, field: Field):
+    def apply(self, field: FieldBase):
         mask = self.transmission(field).astype(np.complex128)
 
         out = field.copy()
@@ -829,8 +979,12 @@ class ScalarMask(element_base):
     """
     def __init__(self, transmission_function):
         self.transmission_function = transmission_function
+        self.name = "ScalarMask"
+        self.description = "Scalar mask with arbitrary transmission function."
+        self.radial_symmetric = False
 
-    def apply(self, field: Field):
+    def apply(self, field: FieldBase):
+        self._radial_symmetric_check(field)
         t = self.transmission_function(field.grid.X, field.grid.Y)
         out = field.copy()
         out.Ex *= t
@@ -841,7 +995,7 @@ class ScalarMask(element_base):
 # vortex retarder, q-plate, etc.
 # arbitrary jones matrix, update waveplate implementation to use jones matrix instead of angle/retardance parameters
 
-class PulseFrontCurvature(element_base):
+class PulseFrontModulation(element_base):
     """
     Imposes spatially varying spectral phase:
 
@@ -864,6 +1018,9 @@ class PulseFrontCurvature(element_base):
         pft_y: float = 0.0,
         gdd_quadratic: float = 0.0,
     ):
+        self.name = "PulseFrontModulation"
+        self.description = f"Pulse front modulation with center wavelength {center_wavelength} m, PFC {pfc} s/m^2, PFTx {pft_x} s/m, PFTy {pft_y} s/m, and GDD quadratic {gdd_quadratic} s^2/m^2."
+        self.radial_symmetric = False
         self.center_wavelength = center_wavelength
         self.omega0 = 2 * np.pi * c / center_wavelength
 
@@ -877,6 +1034,7 @@ class PulseFrontCurvature(element_base):
         self.gdd_quadratic = gdd_quadratic
 
     def apply(self, field: Field) -> Field:
+        self._radial_symmetric_check(field)
         g = field.grid
 
         omega = 2 * np.pi * c / field.wavelength
@@ -901,13 +1059,17 @@ class PulseFrontCurvature(element_base):
         out.Ey *= t
         return out
     
-    class MaterialPhase:
+    class MaterialPhase(element_base):
         def __init__(self, material, thickness_function, n_env=1.0):
             self.material = material
             self.thickness_function = thickness_function
             self.n_env = n_env
+            self.name = "MaterialPhase"
+            self.description = f"Material phase with {material.name} and thickness function."
+            self.radial_symmetric = False
 
         def apply(self, field):
+            self._radial_symmetric_check(field)
             g = field.grid
             wl = field.wavelength
 

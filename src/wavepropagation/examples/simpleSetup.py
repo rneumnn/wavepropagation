@@ -2,16 +2,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 from wavepropagation.grid import Grid
 from wavepropagation.field import Field
-from wavepropagation.sources import MonochromaticSource as MonoSource
+import wavepropagation.sources.source2d.monochromaticSource as MonoSource
 from wavepropagation.opticalSystem import OpticalSystem
 from wavepropagation.elements import *
 from wavepropagation.propagate import AngularSpectrumPropagate as Propagate
 
 grid = Grid(N=1512, L=16e-3)
 
-f1 = MonoSource.gaussian_beam(grid, w0=1.5e-3, polarization=(1, 0))
-f2 = MonoSource.laguerre_gaussian(grid, w0=0.7e-3, l=3, p=1, polarization=(0, 1))
-f3 = MonoSource.bessel_beam(grid, kr=50e3, envelope_waist=1e-2, polarization=(1, 1))
+f1 = MonoSource.gaussian_beam(grid, wavelength=550e-9, w0=1.5e-3, polarization=(1, 0))
+f2 = MonoSource.laguerre_gaussian(grid, wavelength=550e-9, w0=0.7e-3, l=3, p=1, polarization=(0, 1))
+f3 = MonoSource.bessel_beam(grid, wavelength=550e-9, kr=50e3, envelope_waist=1e-2, polarization=(1, 1))
 
 field0 = (f3).normalize()
 
@@ -20,7 +20,7 @@ system = OpticalSystem([
     HalfWavePlate(theta=np.pi/4),
     Propagate(z=0.20),
     #Polarizer(theta=0),
-    Lens(f=0.20),
+    Lens(f0=0.20),
     Propagate(z=0.20)
 ])
 

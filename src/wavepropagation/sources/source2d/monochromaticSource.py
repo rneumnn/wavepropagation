@@ -52,7 +52,7 @@ def bessel_beam(
     if kr is None:
         if axicon_half_angle is None:
             raise ValueError("Either kr or axicon_half_angle must be provided")
-        kr, kz = calculate_kr_from_angle(wavelength, axicon_half_angle=axicon_half_angle, n_axicon=n_axicon, n_medium=n_medium)
+        kr, kz = calculate_kr_from_angle(wavelength, axicon_half_angle=axicon_half_angle, n_axicon=n_axicon, n_medium=n_medium(wavelength))
     A = amplitude * jv(m, kr * grid.R) * np.exp(1j * m * grid.Phi)
     if envelope_waist is not None:
         A *= np.exp(-(grid.R**2) / envelope_waist**2)

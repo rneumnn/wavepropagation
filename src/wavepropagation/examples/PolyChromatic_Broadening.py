@@ -1,6 +1,6 @@
 from wavepropagation.spectrum import PolychromaticField as poly_field
-from wavepropagation.sources.polychromaticSource import PolychromaticSource as PS
-from wavepropagation.sources.spectralUtils import gaussian_spectrum, gaussian_spectrum_omega
+import wavepropagation.sources.source2d.polychromaticSource as PS
+from wavepropagation.sources.spectralUtils import gaussian_spectrum_omega
 from wavepropagation.propagate import AngularSpectrumPropagate as Propagate
 from wavepropagation.elements import *
 from wavepropagation.grid import Grid
@@ -13,11 +13,10 @@ from scipy.constants import c as c0
 
 def main():
     grid = Grid(N=512, L=16e-3)
-    spec = gaussian_spectrum_omega(center_wavelength=800e-9, fwhm=200e-9, num=50)
+    spec = gaussian_spectrum_omega(center_wavelength=800e-9, fwhm_wavelength_approx=200e-9, num=50)
     poly_field = PS.polychromatic_gaussian_beam(
         grid=grid,
-        wavelengths=spec.wavelengths,
-        weights=spec.weights,
+        from_spectrum=spec,
         w0=1e-2, n_medium=materials.BK7.n_function
     )
     z1 = 1e-3
@@ -39,9 +38,9 @@ def main():
     # phase_z1= hist[0].spectral_phase_center(centered=True)[0]
     # phase_z2= result.spectral_phase_center(centered=True)[0]
 
-    fit0, omegas, phase_initial = poly_field.fit_spectral_phase(order=2)
-    fit1, _, phase_z1 = hist[0].fit_spectral_phase(order=2)
-    fit2, _, phase_z2 = result.fit_spectral_phase(order=2)
+    fit0, fit0y, omegas, phase_initial, _ = poly_field.fit_spectral_phase_at_index(order=3)
+    fit1,_, _, phase_z1,_ = hist[0].fit_spectral_phase_at_index(order=3)
+    fit2,_, _, phase_z2,_ = result.fit_spectral_phase_at_index(order=3)
 
     lin0 = np.polyfit(omegas, phase_initial, 1)
     lin1 = np.polyfit(omegas, phase_z1, 1)

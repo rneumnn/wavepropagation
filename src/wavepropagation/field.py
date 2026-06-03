@@ -61,6 +61,10 @@ class FieldBase:
     def phase_y(self):
         return np.angle(self.Ey)
     
+    @property
+    def is_radial(self):
+        return isinstance(self.grid, RadialGrid)
+    
     def __add__(self, other: "FieldBase") -> "FieldBase":
         if self.grid is not other.grid:
             raise ValueError("Fields must share the same Grid instance.")

@@ -1,6 +1,7 @@
 from wavepropagation.elements import ThinRealLens
 import matplotlib.pyplot as plt
-from wavepropagation.sources import polychromaticSource, monochromaticSource, spectralUtils
+from wavepropagation.sources.source2d import polychromaticSource, monochromaticSource
+from wavepropagation.sources import spectralUtils
 from wavepropagation.propagate import AngularSpectrumPropagate, DirectScaledAngularSpectrumPropagate, CZTScaledAngularSpectrumPropagate
 from wavepropagation.materials.materials import BK7, AIR
 from wavepropagation.grid import Grid
@@ -12,8 +13,8 @@ L1 = 10e-2
 grid_in = Grid(N1, L1)
 
 lens = ThinRealLens(R1=0e-3, R2=250e-3, n=BK7.n_function, center_thickness=5e-3, relative_aperture=0.9)
-Laser = monochromaticSource.MonochromaticSource.gaussian_beam(grid=grid_in, wavelength=800e-9, w0=3e-3, n_medium=AIR.n_function)
-PolychromLaser = polychromaticSource.PolychromaticSource.polychromatic_gaussian_beam(
+Laser = monochromaticSource.gaussian_beam(grid=grid_in, wavelength=800e-9, w0=3e-3, n_medium=AIR.n_function)
+PolychromLaser = polychromaticSource.polychromatic_gaussian_beam(
     grid=grid_in,
     from_spectrum=spectralUtils.gaussian_spectrum_omega(center_wavelength=800e-9, fwhm_wavelength_approx=50e-9, num = 3),
     w0=3e-3,

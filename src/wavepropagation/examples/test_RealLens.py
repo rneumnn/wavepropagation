@@ -1,6 +1,7 @@
 from wavepropagation.elements import ThinRealLens, ThickRealLens
 import matplotlib.pyplot as plt
-from wavepropagation.sources import polychromaticSource, spectralUtils
+from wavepropagation.sources.source2d import polychromaticSource
+from wavepropagation.sources import spectralUtils
 from wavepropagation.propagate import AngularSpectrumPropagate
 from wavepropagation.materials.materials import BK7, AIR
 from wavepropagation.grid import Grid
@@ -31,7 +32,7 @@ lens.plot_thicknessfunction((-L/2, L/2), (-L/2, L/2))
 #test on field
 grid = Grid(550, L)
 spec = spectralUtils.gaussian_spectrum_omega(center_wavelength=800e-9, fwhm_wavelength_approx=10e-9, num=21)
-field = polychromaticSource.PolychromaticSource.polychromatic_gaussian_beam(
+field = polychromaticSource.polychromatic_gaussian_beam(
     grid=grid,
     from_spectrum=spec,
     w0 = 3e-3, n_medium = AIR.n_function
@@ -51,9 +52,9 @@ AFTER_LENS = hist[1]
 #fits
 labels = ("lens", "z = " + str(1e-3) + " m", "z = " + str(101e-3) + " m")
 print(len(hist))
-fit1,_, omegas, phase_z1,_ = hist[0].fit_spectral_phase_1D(order=2)
-fit2,_, _, phase_z2,_ = hist[1].fit_spectral_phase_1D(order=2)
-fit3,_,_, phase_z3,_ = result.fit_spectral_phase_1D(order=2)
+fit1,_, omegas, phase_z1,_ = hist[0].fit_spectral_phase_at_index(order=2)
+fit2,_, _, phase_z2,_ = hist[1].fit_spectral_phase_at_index(order=2)
+fit3,_,_, phase_z3,_ = result.fit_spectral_phase_at_index(order=2)
 
 lin1 = np.polyval(fit1[-1:], omegas)
 lin2 = np.polyval(fit2[-1:], omegas)
@@ -86,12 +87,12 @@ print("GDD: ", phi_n[2]*1e30, " fs^2")
 # plt.show()
 
 ## test phasefit 2d
-fit = AFTER_LENS.fit_spectral_phase_2D(order = 3)
+fit = AFTER_LENS.fit_spectral_phase_array(order = 3)
 
 ## calculate time field
 phi= AFTER_LENS.spectral_phase_center(centered=True)[0]
 expansion,_ = AFTER_LENS.get_phase_expansion(2)
-print(f"Measured GD in pulse center = {expansion.GD:.2f}")
+print(f"Measured GD in pulse center = {expansion.GD*1e15:.2f} fs")
 times = np.linspace(-300e-15, 300e-15, 400)
 delta_t = 200e-15
 times_lab = times + expansion.GD

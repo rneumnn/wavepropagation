@@ -112,7 +112,7 @@ class PolychromaticField:
             if comp.weight < 0:
                 raise ValueError("Spectral weights must be non-negative.")
             
-    def __post_init__(self):
+    # def __post_init__(self):
         self._wavelengths = np.fromiter(
             (comp.wavelength for comp in self.components),
             dtype=float,
@@ -172,6 +172,10 @@ class PolychromaticField:
         2 dim timefield a a specific position zi: E_zi(t,x,y)
         """
         return self._time_fields
+    
+    @time_field_zi.setter
+    def time_field_zi(self, value: np.ndarray):
+        self._time_fields = value
     
     @property
     def is_radial(self):
@@ -243,7 +247,7 @@ class PolychromaticField:
             Optional dict with center index and center values.
         """
         # Determine indexing mode from the first field
-        field_index = self._check_index(index)
+        field_index = self.components[0]._check_index(index)
 
         omegas = self.omegas
         wavelengths = self.wavelengths
@@ -782,7 +786,7 @@ class PolychromaticField:
 
         coefficients_x, coefficients_y, _, _, _ = self.fit_spectral_phase_at_index(
             order=order,
-            index=index,
+            field_index=index,
         )
 
         expansion_x = PhaseExpansion(
@@ -1785,7 +1789,7 @@ class PolychromaticField:
         return np.clip(img, 0.0, 1.0)
     
     def plot_n_medium(self):
-        wavelengths = self.wavelengths()
+        wavelengths = self.wavelengths
         n_media = np.array([comp.field.n_medium for comp in self.components])
         plt.figure()
         plt.plot(wavelengths*1e9, n_media)
