@@ -1,5 +1,5 @@
 import numpy as np
-from .grid import Grid, RadialGrid
+from .grid import Grid, RadialGrid, QDHTRadialGrid
 from .JonesCalculus import JonesVector, H, V, L, R
 from scipy.constants import c
 
@@ -18,7 +18,7 @@ class FieldBase:
         self.wavelength = float(wavelength)
         self.n_medium = float(n_medium)
 
-        if isinstance(grid, RadialGrid):
+        if isinstance(grid, RadialGrid) or isinstance(grid, QDHTRadialGrid):
             shape = (grid.Nr,)
         elif isinstance(grid, Grid):
             shape = (grid.N, grid.N)
@@ -122,7 +122,18 @@ class FieldBase:
         return np.abs(self.Ex)**2 + np.abs(self.Ey)**2
 
     def power(self) -> float:
-        return float(np.sum(self.intensity()) * self.grid.dxy**2)
+        I = self.intensity()
+
+        if hasattr(self.grid, "integration_weights"):
+            return float(np.sum(I * self.grid.integration_weights))
+
+        if isinstance(self.grid, RadialGrid):
+            return float(np.sum(I * 2 * np.pi * self.grid.r * self.grid.dr))
+
+        if isinstance(self.grid, Grid):
+            return float(np.sum(I) * self.grid.dx * self.grid.dy)
+
+        raise TypeError("Unknown grid type.")
 
     def normalize(self, power: float = 1.0) -> "Field":
         p = self.power()
@@ -397,10 +408,6 @@ Field representation for monochromatic vectorial optical fields on a 1D radial g
             spectral_phase_x=spectral_phase_x,
             spectral_phase_y=spectral_phase_y
         )
-
-    def power(self):
-        #redefine for radial fields
-        return float(np.sum(self.intensity() * 2 * np.pi * self.grid.r * self.grid.dr))
     
     def jones_vector(self) -> np.ndarray:
         # Override to iterate over and return 1D array of JonesVector objects for radial fields.

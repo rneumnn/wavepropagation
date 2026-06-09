@@ -13,8 +13,12 @@ def phase_sampling_requirement(phase: np.ndarray, safety: float = 1.0):
         Desired maximum phase step per pixel.
         Use 1.0 for good sampling.
     """
-    dphi_x = np.nanmax(np.abs(np.diff(phase, axis=1)))
-    dphi_y = np.nanmax(np.abs(np.diff(phase, axis=0)))
+    if phase.ndim != 2:
+        dphi_x = np.nanmax(np.abs(np.diff(phase)))
+        dphi_y = 0.0
+    else:
+        dphi_x = np.nanmax(np.abs(np.diff(phase, axis=1)))
+        dphi_y = np.nanmax(np.abs(np.diff(phase, axis=0)))
     dphi_max = max(dphi_x, dphi_y)
 
     factor = dphi_max / safety
@@ -38,29 +42,30 @@ def check_phase_sampling(phase: np.ndarray, name: str = "phase", safety: float =
     """
     phase = np.asarray(phase, dtype=float)
 
-    dphi_x = np.abs(np.diff(phase, axis=1))
-    dphi_y = np.abs(np.diff(phase, axis=0))
-
-    max_dphi_x = np.nanmax(dphi_x)
-    max_dphi_y = np.nanmax(dphi_y)
-    max_dphi = max(max_dphi_x, max_dphi_y)
+    if phase.ndim != 2:
+        dphi_x = np.nanmax(np.abs(np.diff(phase)))
+        dphi_y = 0.0
+    else:
+        dphi_x = np.nanmax(np.abs(np.diff(phase, axis=1)))
+        dphi_y = np.nanmax(np.abs(np.diff(phase, axis=0)))
+    dphi_max = max(dphi_x, dphi_y)
 
     print(f"{name}:")
-    print(f"  max |dphi/dx pixel| = {max_dphi_x:.3f} rad")
-    print(f"  max |dphi/dy pixel| = {max_dphi_y:.3f} rad")
-    print(f"  max |dphi|          = {max_dphi:.3f} rad")
+    print(f"  max |dphi/dx pixel| = {dphi_x:.3f} rad")
+    print(f"  max |dphi/dy pixel| = {dphi_y:.3f} rad")
+    print(f"  max |dphi|          = {dphi_max:.3f} rad")
     print(f"  pi                  = {np.pi:.3f} rad")
 
-    if max_dphi > np.pi:
+    if dphi_max > np.pi:
         print("  BAD: phase is undersampled.")
-    elif max_dphi > 1.0:
+    elif dphi_max > 1.0:
         print("  BORDERLINE: phase may show artifacts.")
     else:
         print("  OK: phase sampling looks good.")
 
     sampling_required_factor = phase_sampling_requirement(phase, safety=safety)
 
-    return max_dphi, sampling_required_factor
+    return dphi_max, sampling_required_factor
 
 import numpy as np
 

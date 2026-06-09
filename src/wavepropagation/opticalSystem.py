@@ -1,4 +1,4 @@
-from .field import Field
+from .field import FieldBase
 from .spectrum import PolychromaticField, SpectralComponent
 from .elements import element_base
 import numpy as np
@@ -8,17 +8,17 @@ class OpticalSystem:
     def __init__(self, elements: list[element_base]):
         self.elements = list(elements)
 
-    def run(self, obj: Field|PolychromaticField, **kwargs) -> tuple[Field|PolychromaticField, list[Field|PolychromaticField]|None]:
+    def run(self, obj: FieldBase|PolychromaticField, **kwargs) -> tuple[FieldBase|PolychromaticField, list[FieldBase|PolychromaticField]|None]:
         keep_history = kwargs.get('keep_history', False)
 
-        def apply_element(element:element_base, field:Field|PolychromaticField) -> Field|PolychromaticField:
+        def apply_element(element:element_base, field:FieldBase|PolychromaticField) -> FieldBase|PolychromaticField:
             current = element.apply(field)
             if keep_history:
                     historyField = current.copy()
                     return current, historyField
             return current, None
 
-        if isinstance(obj, Field):
+        if isinstance(obj, FieldBase):
             if keep_history:
                 history = [obj.copy()]
             current = obj.copy()

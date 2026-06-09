@@ -2,11 +2,15 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.constants import c as c0
 from .field import Field, RadialField
-from .grid import Grid, RadialGrid
+from .grid import Grid, RadialGrid, QDHTRadialGrid
 from .sources.spectralUtils import Spectrum
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 
+def is_visible(wavelength)->bool:
+        if (wavelength>380e-9) and (wavelength<780e-9):
+            return True
+        else: return False
 @dataclass
 class PhaseExpansion:
     phi0: float = 0
@@ -41,8 +45,11 @@ class SpectralComponent:
     def is_unknown_sampled(self):
         return self.sampling_method in ("unknown",)
     
-    def is_radial_field(self):
+    def is_radial_field(self)->bool:
         return isinstance(self.field, RadialField)
+    
+    def is_visible(self)->bool:
+        return is_visible(self.wavelength)
 
     def __post_init__(self):
         if self.sampling_method not in SpectralComponent._possible_methods:
@@ -1641,6 +1648,8 @@ class PolychromaticField:
         ax.set_ylabel("Y")
         ax.set_zlabel("Peaktime /s")
     
+    def is_visible(self)->bool:
+        return is_visible(self.wavelengths.min()) and is_visible(self.wavelengths.max())
     
     @staticmethod
     def wavelength_to_rgb(wavelength_nm: float) -> np.ndarray: 

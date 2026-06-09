@@ -9,11 +9,17 @@ class element_base:
     Base class for optical elements. Subclasses should implement the apply method.
     """
     debug = True
-    def __init__(self):
+    n_element = 0
+    def __init__(self, radial_symmetric=False):
         self.name = "BaseElement"
         self.description = "Base class for optical elements. Subclasses should implement the apply method."
-        self.radial_symmetric = False
+        self.radial_symmetric = radial_symmetric
+        self._update_properties()
         return
+    
+    def _update_properties(self):
+        self.__class__.n_element += 1
+        self.name = f"{self.__class__.__name__}_{self.__class__.n_element}"
     
     def _radial_symmetric_check(self, field:Field|RadialField):
         if not self.radial_symmetric and isinstance(field, RadialField):
@@ -24,15 +30,14 @@ class element_base:
     
 #Lenses
     
-class Lens(element_base):
+class ThinLens(element_base):
     """
     A thin lens element that applies a quadratic phase shift to the field. No chromatic aberration is included in this simple model, so the focal length is independent of wavelength.
     If the medium refractive index, f0 will be as given.
     """
     def __init__(self, f0: float):
+        super().__init__(radial_symmetric = True)
         self.f0 = f0
-        self.radial_symmetric = True
-        self.name = "ThinLens"
         self.description = f"Thin lens with focal length {f0} m. No chromatic aberration."
 
     def focal_length(self, wavelength: float) -> float:
@@ -51,16 +56,14 @@ class Lens(element_base):
         out.Ey *= phase
         return out
     
-class IdealChromaticLens(Lens):
+class IdealChromaticLens(ThinLens):
     """
     A lens with a wavelength-dependent focal length to model chromatic aberration. The focal length is defined by a simple dispersion relation, but can be modified to fit specific materials or designs.
     The material phase dont properly behaves. Only supposed to use for chromatic aberration, not for modeling real lenses with material phase. For that use the RealLens class.
     """
     def __init__(self, f0: float, n_material: RefractiveIndexFunction, ref_wavelength: float = 550e-9):
         super().__init__(f0)
-        self.name = "IdealChromaticLens"
         self.description = f"Thin lens with wavelength-dependent focal length to model chromatic aberration. Focal length at reference wavelength {ref_wavelength*1e9} nm is {f0} m. Refractive index function n(wavelength) is used to calculate the focal length dispersion."
-        self.radial_symmetric = True
         if callable(n_material):
             self.n_ref = n_material(ref_wavelength)
             self.n_material = n_material
@@ -113,9 +116,8 @@ class ThinRealLens(element_base):
     surfaceFunction: callable or None - Custom function to define the lens surface shape
     """
     def __init__(self, R1:float = 0, R2:float = 0, center_thickness:float = 0, relative_aperture:float = 1, n:RefractiveIndexFunction = 1, n_environment:float|RefractiveIndexFunction = 1, surfaceFunction = None):
-        self.name = "ThinRealLens"
+        super().__init__(radial_symmetric = True)
         self.description = f"Thin lens with realistic material phase. R1={R1} m, R2={R2} m, center thickness={center_thickness} m, relative aperture={relative_aperture}, n={n}, n_environment={n_environment}. Surface function can be provided for custom lens shapes, otherwise spherical surfaces are used based on R1 and R2."
-        self.radial_symmetric = True
         self.R1 = R1
         self.R2 = R2
         self.center_thickness = center_thickness
@@ -334,6 +336,7 @@ class ThickRealLens(element_base):
         hankel_backend:
             Optional Hankel transform backend for radially symmetric fields.
         """
+        super().__init__(radial_symmetric=True)
         self.R1 = R1
         self.R2 = R2
         self.center_thickness = center_thickness
@@ -341,9 +344,7 @@ class ThickRealLens(element_base):
         self.n = n
         self.n_environment = n_environment
         self.n_slices = int(n_slices)
-        self.name = "ThickRealLens"
         self.description = f"Thick lens model with curved surfaces, finite thickness, material dispersion, and surrounding medium. R1={R1} m, R2={R2} m, center thickness={center_thickness} m, relative aperture={relative_aperture}, n={n}, n_environment={n_environment}, n_slices={n_slices}."
-        self.radial_symmetric = True
         self.hankel_backend = hankel_backend
         if self.n_slices <= 0:
             raise ValueError("n_slices must be positive.")
@@ -414,7 +415,7 @@ class ThickRealLens(element_base):
         t = z2 - z1
         return np.where(np.isfinite(t), np.maximum(t, 0.0), 0.0)
 
-    def focal_length_paraxial(self, wavelength: float) -> float:
+    def focal_length(self, wavelength: float) -> float:
         """
         Thick-lens paraxial focal length using lensmaker equation.
 
@@ -728,13 +729,12 @@ class PhaseGrating(element_base):
             - float: feste Phasenmodulation in rad
             - callable: modulation(wavelength) -> float
         """
+        super().__init__(radial_symmetric=False)
         self.period = period
         self.modulation = modulation
         self.angle = angle
         self.phase0 = phase0
-        self.name = "PhaseGrating"
         self.description = f"Phase grating with period {period} m, modulation {modulation} rad, angle {angle} rad, and phase offset {phase0} rad."
-        self.radial_symmetric = False
 
     def modulation_at(self, wavelength: float) -> float:
         if callable(self.modulation):
@@ -783,6 +783,7 @@ class ReliefPhaseGrating(element_base):
         :profile: 'sinusoidal' oder 'binary'
         :duty_cycle: nur für binary
         """
+        super().__init__(radial_symmetric=False)
         self.period = period
         self.height = height
         self.n_grating = n_grating
@@ -791,9 +792,7 @@ class ReliefPhaseGrating(element_base):
         self.phase0 = phase0
         self.profile = profile
         self.duty_cycle = duty_cycle
-        self.name = "ReliefPhaseGrating"
         self.description = f"Relief phase grating with period {period} m, height {height} m, n_grating {n_grating}, n_env {n_env}, angle {angle} rad, phase offset {phase0} rad, profile {profile}, and duty cycle {duty_cycle}."
-        self.radial_symmetric = False
 
     def refractive_index_at(self, wavelength: float) -> float:
         if callable(self.n_grating):
@@ -837,10 +836,9 @@ class Polarizer(element_base):
     :param theta: angle of the transmission axis with respect to the x-axis (in radians)
     """
     def __init__(self, theta: float):
+        super().__init__(radial_symmetric=True)
         self.theta = theta
-        self.name = "Polarizer"
         self.description = f"Linear polarizer with transmission axis at {theta} radians."
-        self.radial_symmetric = True
 
     def apply(self, field: FieldBase) -> FieldBase:
         self._radial_symmetric_check(field)
@@ -868,11 +866,10 @@ class WavePlate(element_base):
             :param retardance: 
             :type retardance: _type_
         """
+        super().__init__(radial_symmetric=True)
         self.theta = theta
         self.retardance = retardance
-        self.name = "WavePlate"
         self.description = f"Wave plate with fast axis at {theta} radians and retardance {retardance} radians."
-        self.radial_symmetric = True
 
     def apply(self, field: FieldBase):
         """
@@ -903,14 +900,12 @@ class WavePlate(element_base):
 class HalfWavePlate(WavePlate):
     def __init__(self, theta: float):
         super().__init__(theta, retardance=np.pi)
-        self.name = "HalfWavePlate"
         self.description = f"Half-wave plate with fast axis at {theta} radians."
 
 
 class QuarterWavePlate(WavePlate):
     def __init__(self, theta: float):
         super().__init__(theta, retardance=np.pi/2)
-        self.name = "QuarterWavePlate"
         self.description = f"Quarter-wave plate with fast axis at {theta} radians."
 
 class CircularAperture(element_base):
@@ -929,12 +924,11 @@ class CircularAperture(element_base):
 
         At r = radius, the transmission is edge_level.
         """
+        super().__init__(radial_symmetric=True)
         self.radius = float(radius)
         self.smoothness = float(smoothness)
         self.edge_level = float(edge_level)
-        self.name = "CircularAperture"
         self.description = f"Circular aperture with radius {radius} and smoothness {smoothness}."
-        self.radial_symmetric = True
 
     def transmission(self, field: FieldBase) -> np.ndarray:
         r = field.grid.R
@@ -978,10 +972,9 @@ class ScalarMask(element_base):
     coordinates) and returns a 2D array of complex transmission values.
     """
     def __init__(self, transmission_function):
+        super().__init__(radial_symmetric=False)
         self.transmission_function = transmission_function
-        self.name = "ScalarMask"
         self.description = "Scalar mask with arbitrary transmission function."
-        self.radial_symmetric = False
 
     def apply(self, field: FieldBase):
         self._radial_symmetric_check(field)
@@ -1018,9 +1011,8 @@ class PulseFrontModulation(element_base):
         pft_y: float = 0.0,
         gdd_quadratic: float = 0.0,
     ):
-        self.name = "PulseFrontModulation"
+        super().__init__(radial_symmetric=False)
         self.description = f"Pulse front modulation with center wavelength {center_wavelength} m, PFC {pfc} s/m^2, PFTx {pft_x} s/m, PFTy {pft_y} s/m, and GDD quadratic {gdd_quadratic} s^2/m^2."
-        self.radial_symmetric = False
         self.center_wavelength = center_wavelength
         self.omega0 = 2 * np.pi * c / center_wavelength
 
@@ -1061,12 +1053,11 @@ class PulseFrontModulation(element_base):
     
     class MaterialPhase(element_base):
         def __init__(self, material, thickness_function, n_env=1.0):
+            super().__init__(radial_symmetric=False)
             self.material = material
             self.thickness_function = thickness_function
             self.n_env = n_env
-            self.name = "MaterialPhase"
             self.description = f"Material phase with {material.name} and thickness function."
-            self.radial_symmetric = False
 
         def apply(self, field):
             self._radial_symmetric_check(field)

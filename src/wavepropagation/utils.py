@@ -144,3 +144,29 @@ def padded_grid_like(grid, pad_factor: int):
         N=grid.N * pad_factor,
         L=grid.L * pad_factor,
     )
+
+def test_hankel_roundtrip(field, backend):
+    """
+    Test that forward and inverse Hankel transforms are consistent.
+    Aim for roundtrip field error << 1e-3; roundtrip power error << 1e-3 for usable backend implementation.
+    Returns:
+        err_field: max relative error in field values after roundtrip
+        err_power: relative error in total power after roundtrip
+
+    """
+    E0 = field.Ex
+    E1 = backend.inverse(backend.forward(E0))
+
+    err_field = np.max(np.abs(E1 - E0)) / np.max(np.abs(E0))
+
+    tmp = field.copy()
+    tmp.Ex = E1
+    tmp.Ey[:] = 0.0
+
+    err_power = abs(tmp.power() - field.power()) / field.power()
+
+    print("roundtrip field error:", err_field)
+    print("roundtrip power error:", err_power)
+
+    return err_field, err_power
+
