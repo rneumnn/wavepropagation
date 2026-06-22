@@ -4,8 +4,8 @@ from opticsSimulationTools.wavepropagation.sources.source2d.monochromaticSource 
 from opticsSimulationTools.materials import materials
 from opticsSimulationTools.wavepropagation.hankelBackend import PyHankBackend
 from opticsSimulationTools.wavepropagation.propagate import HankelAngularSpectrumPropagate, AngularSpectrumPropagate
-from opticsSimulationTools.wavepropagation.opticalSystem import OpticalSystem as OS
-from opticsSimulationTools.wavepropagation.elements import ThinLens, ThinRealLens
+from opticsSimulationTools.opticalSystem import OpticalSystem as OS
+from opticsSimulationTools.elements import ThinLens, ThinRealLens
 from opticsSimulationTools.wavepropagation.polychromaticField import PolychromaticField
 from opticsSimulationTools.wavepropagation.visualizing import plot_radial_intensity, plot_radial_field_Ex, plot_field2d_Intensity
 import matplotlib.pyplot as plt
@@ -39,11 +39,11 @@ field = gaussian_beam(
     n_medium=materials.AIR.n_function,
 )
 
-# field2d = gauss2d(
-#     grid = Grid(N=2**10, L = 10e-2),
-#     wavelength=800e-9,
-#     w0 = 3e-2,
-# )
+field2d = gauss2d(
+    grid = Grid(N=2**10, L = 10e-2),
+    wavelength=800e-9,
+    w0 = 3e-2,
+)
 
 def test_pyhank_consistency():
     print("roundtrip:", backend.roundtrip_error(field.Ex))

@@ -1,5 +1,5 @@
-from .field import FieldBase
-from .polychromaticField import PolychromaticField, SpectralComponent
+from .wavepropagation.field import FieldBase
+from .wavepropagation.polychromaticField import PolychromaticField, SpectralComponent
 from .elements import element_base
 import numpy as np
 

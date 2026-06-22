@@ -3,8 +3,8 @@ import numpy as np
 from opticsSimulationTools.wavepropagation.grid import Grid
 from opticsSimulationTools.wavepropagation.field import Field
 import opticsSimulationTools.wavepropagation.sources.source2d.monochromaticSource as MonoSource
-from opticsSimulationTools.wavepropagation.opticalSystem import OpticalSystem
-from opticsSimulationTools.wavepropagation.elements import *
+from opticsSimulationTools.opticalSystem import OpticalSystem
+from opticsSimulationTools.elements import *
 from opticsSimulationTools.wavepropagation.propagate import AngularSpectrumPropagate as Propagate
 
 grid = Grid(N=1512, L=16e-3)
@@ -20,7 +20,7 @@ system = OpticalSystem([
     HalfWavePlate(theta=np.pi/4),
     Propagate(z=0.20),
     #Polarizer(theta=0),
-    Lens(f0=0.20),
+    ThinLens(f0=0.20),
     Propagate(z=0.20)
 ])
 

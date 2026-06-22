@@ -1,7 +1,7 @@
-from .field import Field, RadialField, FieldBase
+from .wavepropagation.field import Field, RadialField, FieldBase
 import numpy as np
 from scipy.constants import c, pi
-from ..materials.materialCore import RefractiveIndexFunction
+from .materials.materialCore import RefractiveIndexFunction
 
 
 class element_base:
@@ -202,7 +202,7 @@ class ThinRealLens(element_base):
         -------
         factor_needed: float - The factor by which the grid size of the input field should be increased to achieve adequate phase sampling based on the maximum phase step.
         """
-        from.analyzing import phase_sampling_requirement
+        from.wavepropagation.analyzing import phase_sampling_requirement
         factor_needed = phase_sampling_requirement(self.calculate_material_phase(field)[0], safety=safety)
         return factor_needed
 
