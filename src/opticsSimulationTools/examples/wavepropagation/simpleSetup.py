@@ -1,11 +1,11 @@
 import matplotlib.pyplot as plt
 import numpy as np
-from wavepropagation.grid import Grid
-from wavepropagation.field import Field
-import wavepropagation.sources.source2d.monochromaticSource as MonoSource
-from wavepropagation.opticalSystem import OpticalSystem
-from wavepropagation.elements import *
-from wavepropagation.propagate import AngularSpectrumPropagate as Propagate
+from opticsSimulationTools.wavepropagation.grid import Grid
+from opticsSimulationTools.wavepropagation.field import Field
+import opticsSimulationTools.wavepropagation.sources.source2d.monochromaticSource as MonoSource
+from opticsSimulationTools.wavepropagation.opticalSystem import OpticalSystem
+from opticsSimulationTools.wavepropagation.elements import *
+from opticsSimulationTools.wavepropagation.propagate import AngularSpectrumPropagate as Propagate
 
 grid = Grid(N=1512, L=16e-3)
 

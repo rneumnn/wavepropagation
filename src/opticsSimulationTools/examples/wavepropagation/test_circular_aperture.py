@@ -1,6 +1,6 @@
-from wavepropagation.elements import CircularAperture
-import wavepropagation.sources.source2d.monochromaticSource as MS
-from wavepropagation.grid import Grid
+from opticsSimulationTools.wavepropagation.elements import CircularAperture
+import opticsSimulationTools.wavepropagation.sources.source2d.monochromaticSource as MS
+from opticsSimulationTools.wavepropagation.grid import Grid
 import matplotlib.pyplot as plt
 
 def test_circular_aperture():

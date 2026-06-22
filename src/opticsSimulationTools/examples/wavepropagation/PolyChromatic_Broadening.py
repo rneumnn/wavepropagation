@@ -1,13 +1,13 @@
-from wavepropagation.spectrum import PolychromaticField as poly_field
-import wavepropagation.sources.source2d.polychromaticSource as PS
-from wavepropagation.sources.spectralUtils import gaussian_spectrum_omega
-from wavepropagation.propagate import AngularSpectrumPropagate as Propagate
-from wavepropagation.elements import *
-from wavepropagation.grid import Grid
+from opticsSimulationTools.wavepropagation.polychromaticField import PolychromaticField as poly_field
+import opticsSimulationTools.wavepropagation.sources.source2d.polychromaticSource as PS
+from opticsSimulationTools.spectralUtils import gaussian_spectrum_omega
+from opticsSimulationTools.wavepropagation.propagate import AngularSpectrumPropagate as Propagate
+from opticsSimulationTools.wavepropagation.elements import *
+from opticsSimulationTools.wavepropagation.grid import Grid
 import matplotlib.pyplot as plt
 import numpy as np
-from wavepropagation.opticalSystem import OpticalSystem
-import wavepropagation.materials.materials as materials
+from opticsSimulationTools.wavepropagation.opticalSystem import OpticalSystem
+import opticsSimulationTools.materials.materials as materials
 from scipy.constants import c as c0
 
 

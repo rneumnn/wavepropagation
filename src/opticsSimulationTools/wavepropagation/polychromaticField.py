@@ -3,7 +3,7 @@ import numpy as np
 from scipy.constants import c as c0
 from .field import Field, RadialField
 from .grid import Grid, RadialGrid, QDHTRadialGrid
-from .sources.spectralUtils import Spectrum
+from ..spectralUtils import Spectrum
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from .elements import element_base

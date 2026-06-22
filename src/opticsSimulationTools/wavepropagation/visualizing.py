@@ -4,7 +4,7 @@
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from .field import RadialField, Field, FieldBase
-from .spectrum import PolychromaticField, is_visible
+from .polychromaticField import PolychromaticField, is_visible
 import numpy as np
 #from .utils import is_visible as isV
 

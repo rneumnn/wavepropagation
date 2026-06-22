@@ -1,13 +1,13 @@
-from wavepropagation.grid import RadialGrid, PyHankRadialGrid, Grid
-from wavepropagation.sources.radialSymmetric.monochromaticSource import gaussian_beam
-from wavepropagation.sources.source2d.monochromaticSource import gaussian_beam as gauss2d
-from wavepropagation.materials import materials
-from wavepropagation.hankelBackend import PyHankBackend
-from wavepropagation.propagate import HankelAngularSpectrumPropagate, AngularSpectrumPropagate
-from wavepropagation.opticalSystem import OpticalSystem as OS
-from wavepropagation.elements import ThinLens, ThinRealLens
-from wavepropagation.spectrum import PolychromaticField
-from wavepropagation.visualizing import plot_radial_intensity, plot_radial_field_Ex, plot_field2d_Intensity
+from opticsSimulationTools.wavepropagation.grid import RadialGrid, PyHankRadialGrid, Grid
+from opticsSimulationTools.wavepropagation.sources.radialSymmetric.monochromaticSource import gaussian_beam
+from opticsSimulationTools.wavepropagation.sources.source2d.monochromaticSource import gaussian_beam as gauss2d
+from opticsSimulationTools.materials import materials
+from opticsSimulationTools.wavepropagation.hankelBackend import PyHankBackend
+from opticsSimulationTools.wavepropagation.propagate import HankelAngularSpectrumPropagate, AngularSpectrumPropagate
+from opticsSimulationTools.wavepropagation.opticalSystem import OpticalSystem as OS
+from opticsSimulationTools.wavepropagation.elements import ThinLens, ThinRealLens
+from opticsSimulationTools.wavepropagation.polychromaticField import PolychromaticField
+from opticsSimulationTools.wavepropagation.visualizing import plot_radial_intensity, plot_radial_field_Ex, plot_field2d_Intensity
 import matplotlib.pyplot as plt
 import numpy as np
 

@@ -3,8 +3,8 @@ from ...grid import Grid
 import numpy as np
 from scipy.special import genlaguerre, jv
 from ...utils import calculate_kr_from_angle
-from ...materials import materials
-from ...materials.materialCore import RefractiveIndexFunction
+from ....materials import materials
+from ....materials.materialCore import RefractiveIndexFunction
 
 def gaussian_beam(
     grid: Grid,

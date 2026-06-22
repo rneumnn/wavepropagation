@@ -1,12 +1,12 @@
-from wavepropagation.spectrum import PolychromaticField as poly_field
-import wavepropagation.sources.source2d.polychromaticSource as PS
-from wavepropagation.sources.spectralUtils import gaussian_spectrum_omega
-from wavepropagation.propagate import FresnelPropagate as Propagate
-from wavepropagation.elements import *
-from wavepropagation.grid import Grid
+from opticsSimulationTools.wavepropagation.polychromaticField import PolychromaticField as poly_field
+import opticsSimulationTools.wavepropagation.sources.source2d.polychromaticSource as PS
+from opticsSimulationTools.spectralUtils import gaussian_spectrum_omega
+from opticsSimulationTools.wavepropagation.propagate import FresnelPropagate as Propagate
+from opticsSimulationTools.wavepropagation.elements import *
+from opticsSimulationTools.wavepropagation.grid import Grid
 import matplotlib.pyplot as plt
 import numpy as np
-from wavepropagation.opticalSystem import OpticalSystem
+from opticsSimulationTools.wavepropagation.opticalSystem import OpticalSystem
 
 grid = Grid(N=1512, L=16e-3)
 spec = gaussian_spectrum_omega(center_wavelength=550e-9, fwhm_wavelength_approx=200e-9, num=17)

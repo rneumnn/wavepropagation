@@ -1,4 +1,4 @@
-from wavepropagation.JonesCalculus import JonesVector, H, V, L, R
+from opticsSimulationTools.wavepropagation.JonesCalculus import JonesVector, H, V, L, R
 import numpy as np
 
 

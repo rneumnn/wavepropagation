@@ -1,11 +1,11 @@
-from wavepropagation.elements import ThinRealLens, ThickRealLens
+from opticsSimulationTools.wavepropagation.elements import ThinRealLens, ThickRealLens
 import matplotlib.pyplot as plt
-from wavepropagation.sources.source2d import polychromaticSource
-from wavepropagation.sources import spectralUtils
-from wavepropagation.propagate import AngularSpectrumPropagate
-from wavepropagation.materials.materials import BK7, AIR
-from wavepropagation.grid import Grid
-from wavepropagation.opticalSystem import OpticalSystem
+from opticsSimulationTools.wavepropagation.sources.source2d import polychromaticSource
+from opticsSimulationTools import spectralUtils
+from opticsSimulationTools.wavepropagation.propagate import AngularSpectrumPropagate
+from opticsSimulationTools.materials.materials import BK7, AIR
+from opticsSimulationTools.wavepropagation.grid import Grid
+from opticsSimulationTools.wavepropagation.opticalSystem import OpticalSystem
 import numpy as np
 
 w0 = 3e-3

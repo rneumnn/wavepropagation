@@ -1,8 +1,8 @@
-from wavepropagation.grid import RadialGrid
-from wavepropagation.sources.radialSymmetric.monochromaticSource import gaussian_beam
-from wavepropagation.materials import materials
-from wavepropagation.hankelBackend import QDHTBackend, UnitaryQDHTBackend
-from wavepropagation.propagate import HankelAngularSpectrumPropagate
+from opticsSimulationTools.wavepropagation.grid import RadialGrid
+from opticsSimulationTools.wavepropagation.sources.radialSymmetric.monochromaticSource import gaussian_beam
+from opticsSimulationTools.materials import materials
+from opticsSimulationTools.wavepropagation.hankelBackend import QDHTBackend, UnitaryQDHTBackend
+from opticsSimulationTools.wavepropagation.propagate import HankelAngularSpectrumPropagate
 import numpy as np
 
 #radial_grid = RadialGrid(Nr=1024, Rmax=20e-3)
