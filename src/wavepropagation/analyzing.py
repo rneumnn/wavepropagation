@@ -49,6 +49,7 @@ def check_phase_sampling(phase: np.ndarray, name: str = "phase", safety: float =
         dphi_x = np.nanmax(np.abs(np.diff(phase, axis=1)))
         dphi_y = np.nanmax(np.abs(np.diff(phase, axis=0)))
     dphi_max = max(dphi_x, dphi_y)
+    index_crit = np.where(dphi_x>np.pi)
 
     print(f"{name}:")
     print(f"  max |dphi/dx pixel| = {dphi_x:.3f} rad")
@@ -65,9 +66,7 @@ def check_phase_sampling(phase: np.ndarray, name: str = "phase", safety: float =
 
     sampling_required_factor = phase_sampling_requirement(phase, safety=safety)
 
-    return dphi_max, sampling_required_factor
-
-import numpy as np
+    return dphi_max, sampling_required_factor, index_crit
 
 
 def required_N_for_lens_phase(
@@ -112,3 +111,17 @@ def required_N_for_lens_phase(
     N_required = k * r_max * L / (f * max_phase_step)
 
     return int(np.ceil(N_required))
+
+def get_phase_critical_radius(phase, r):
+    """
+    Gets the lens radius where first time dphi > pi
+    
+        :param phase: 
+        :type phase: _type_
+        :param r: 
+        :type r: _type_
+    """
+    _,_, mask = check_phase_sampling(phase)
+    r_masked = r[mask]
+
+    return np.min(r), mask

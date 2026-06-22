@@ -2,14 +2,58 @@ import numpy as np
 from .field import Field, RadialField
 from .utils import resample_real_array, resample_complex_array, pad_array_centered, padded_grid_like
 from scipy.signal import czt
-from .hankelBackend import QDHTBackend, UnitaryQDHTBackend
+from .hankelBackend import _UnitaryQDHTBackend, PyHankBackend
+from .elements import element_base
+from skimage.restoration import unwrap_phase
 
-class Propagate_base:
-    def __init__(self, z: float, add_to_spectral_phase: bool = True):
+def _sync_2d_phase(out:Field, field:Field, z: float):
+    """
+    Synchronize spectral_phase_x/y with the actual propagated complex field.
+
+    Absolute center phase:
+        old_center_phase + k*z
+
+    Spatial relative phasefront:
+        unwrap(angle(out.Ex/Ey)) - center value
+    """
+    ny, nx = out.Ex.shape
+    cy = ny // 2
+    cx = nx // 2
+
+    # X component
+    if np.max(np.abs(out.Ex)) > 0:
+        phi_x = unwrap_phase(np.angle(out.Ex))
+        phi_x_rel = phi_x - phi_x[cy, cx]
+
+        out.spectral_phase_x = (
+            field.spectral_phase_x[cy, cx]
+            + field.k * z
+            + phi_x_rel
+        )
+    else:
+        out.spectral_phase_x = field.spectral_phase_x + field.k * z
+
+    # Y component
+    if np.max(np.abs(out.Ey)) > 0:
+        phi_y = unwrap_phase(np.angle(out.Ey))
+        phi_y_rel = phi_y - phi_y[cy, cx]
+
+        out.spectral_phase_y = (
+            field.spectral_phase_y[cy, cx]
+            + field.k * z
+            + phi_y_rel
+        )
+    else:
+        out.spectral_phase_y = field.spectral_phase_y + field.k * z
+
+class Propagate_base(element_base):
+    def __init__(self, z: float, add_to_spectral_phase: bool = True, radial_symmetric = False):
+        super().__init__(radial_symmetric=radial_symmetric)
         self.z = z
+        self.description=("Propagator base class")
         self.add_to_spectral_phase = add_to_spectral_phase
 
-    def apply(self, field: Field):
+    def _apply(self, field: Field):
         # This is a placeholder for the actual propagation method.
         # You can replace this with Angular Spectrum or Fresnel propagation as needed.
         return field.copy()  # No actual propagation implemented here
@@ -18,7 +62,7 @@ class AngularSpectrumPropagate(Propagate_base):
     def __init__(self, z: float, add_to_spectral_phase: bool = True):
         super().__init__(z, add_to_spectral_phase)
 
-    def apply(self, field: Field) -> Field:
+    def _apply(self, field: Field) -> Field:
         g = field.grid
         kz = np.sqrt((field.k**2 - g.KX**2 - g.KY**2) + 0j)
         H = np.exp(1j * kz * self.z)
@@ -28,14 +72,13 @@ class AngularSpectrumPropagate(Propagate_base):
         out.Ey = np.fft.ifft2(np.fft.fft2(field.Ey) * H)
         # Temporal spectral phase bookkeeping: on-axis propagation phase.
         if self.add_to_spectral_phase:
-            out.spectral_phase_x += field.k * self.z
-            out.spectral_phase_y += field.k * self.z
+            _sync_2d_phase(out, field, self.z)
         return out
     
 ### angular spectrum with output grid rescaling
 import numpy as np
 
-class DirectScaledAngularSpectrumPropagate(Propagate_base):
+class _DirectScaledAngularSpectrumPropagate(Propagate_base):
     """
     Slow direct implementation of angular spectrum propagation with rescaling
     to a different output grid.
@@ -94,7 +137,7 @@ class DirectScaledAngularSpectrumPropagate(Propagate_base):
 
         return E_out
 
-    def apply(self, field: Field) -> Field:
+    def _apply(self, field: Field) -> Field:
         out = field.copy()
         out.grid = self.output_grid
 
@@ -115,8 +158,7 @@ class DirectScaledAngularSpectrumPropagate(Propagate_base):
             fill_value=np.nan,
         )
         if self.add_to_spectral_phase:
-            out.spectral_phase_x += field.k * self.z
-            out.spectral_phase_y += field.k * self.z
+            _sync_2d_phase(out, field, self.z)
 
         return out
     
@@ -283,7 +325,7 @@ class CZTScaledAngularSpectrumPropagate(Propagate_base):
 
         return E_out
 
-    def apply(self, field: Field) -> Field:
+    def _apply(self, field: Field) -> Field:
         gout = self.output_grid
 
         out = field.copy()
@@ -309,8 +351,7 @@ class CZTScaledAngularSpectrumPropagate(Propagate_base):
 
         # Add on-axis propagation phase on the new grid.
         if self.add_to_spectral_phase:
-            out.spectral_phase_x += field.k * self.z
-            out.spectral_phase_y += field.k * self.z
+            _sync_2d_phase(out, field, self.z)
 
         return out
     
@@ -318,7 +359,7 @@ class FresnelPropagate(Propagate_base):
     def __init__(self, z: float, add_to_spectral_phase: bool = True):
         super().__init__(z, add_to_spectral_phase)
 
-    def apply(self, field: Field) -> Field:
+    def _apply(self, field: Field) -> Field:
         g = field.grid
         H = np.exp(1j * field.k * self.z) * np.exp(
             -1j * self.z * (g.KX**2 + g.KY**2) / (2 * field.k)
@@ -328,8 +369,7 @@ class FresnelPropagate(Propagate_base):
         out.Ex = np.fft.ifft2(np.fft.fft2(field.Ex) * H)
         out.Ey = np.fft.ifft2(np.fft.fft2(field.Ey) * H)
         if self.add_to_spectral_phase:
-            out.spectral_phase_x += field.k * self.z
-            out.spectral_phase_y += field.k * self.z
+            _sync_2d_phase(out, field, self.z)
         return out
     
 
@@ -343,10 +383,10 @@ class HankelAngularSpectrumPropagate(Propagate_base):
     def __init__(
         self,
         z: float,
-        backend: UnitaryQDHTBackend,
+        backend: PyHankBackend,
         add_to_spectral_phase: bool = True,
     ):
-        super().__init__(z)
+        super().__init__(z, radial_symmetric=True)
         self.backend = backend
         self.add_to_spectral_phase = bool(add_to_spectral_phase)
 
@@ -361,7 +401,30 @@ class HankelAngularSpectrumPropagate(Propagate_base):
 
         return E_out
 
-    def apply(self, field: RadialField) -> RadialField:
+    def _apply(self, field: RadialField) -> RadialField:
+        def _sync_radial_phase(out: RadialField, field: RadialField, z: float):
+            """
+            Synchronize spectral_phase_x/y with the actual propagated complex field.
+
+            The absolute on-axis phase is advanced analytically by k*z.
+            The spatially relative phasefront is taken from angle(out.Ex/Ey).
+            """
+            # X component
+            if np.max(np.abs(out.Ex)) > 0:
+                phi_x = np.unwrap(np.angle(out.Ex))
+                phi_x_rel = phi_x - phi_x[0]
+                out.spectral_phase_x = field.spectral_phase_x[0] + field.k * z + phi_x_rel
+            else:
+                out.spectral_phase_x = field.spectral_phase_x + field.k * z
+
+            # Y component
+            if np.max(np.abs(out.Ey)) > 0:
+                phi_y = np.unwrap(np.angle(out.Ey))
+                phi_y_rel = phi_y - phi_y[0]
+                out.spectral_phase_y = field.spectral_phase_y[0] + field.k * z + phi_y_rel
+            else:
+                out.spectral_phase_y = field.spectral_phase_y + field.k * z
+
         if not isinstance(field, RadialField):
             raise TypeError("HankelAngularSpectrumPropagate requires a RadialField.")
 
@@ -377,7 +440,6 @@ class HankelAngularSpectrumPropagate(Propagate_base):
         out.Ey = self._propagate_component(field.Ey, field.k)
 
         if self.add_to_spectral_phase:
-            out.spectral_phase_x += field.k * self.z
-            out.spectral_phase_y += field.k * self.z
+            _sync_radial_phase(out=out, field=field, z=self.z)
 
         return out

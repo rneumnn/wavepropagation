@@ -6,6 +6,7 @@ from .grid import Grid, RadialGrid, QDHTRadialGrid
 from .sources.spectralUtils import Spectrum
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
+from .elements import element_base
 
 def is_visible(wavelength)->bool:
         if (wavelength>380e-9) and (wavelength<780e-9):
@@ -187,6 +188,68 @@ class PolychromaticField:
     @property
     def is_radial(self):
         return isinstance(self.grid, RadialGrid)
+    
+    @property
+    def last_element(self)->element_base|None:
+        return self.components[0].field.last_element
+    
+    def E_t(
+        self,
+        t: float = 0.0,
+        center_wavelength: float | None = None,
+        use_spectral_phase: bool = True,
+    ):
+        """
+        Coherently sum all spectral components at a single time.
+
+        Returns
+        -------
+        Ex_sum, Ey_sum:
+            Complex fields with shape equal to the spatial field shape.
+
+        Notes
+        -----
+        This is a coherent field sum at one selected time. The result depends on
+        the chosen time because the spectral components have different frequencies.
+        """
+        if len(self.components) == 0:
+            raise ValueError("No spectral components available.")
+
+        if center_wavelength is None:
+            center_wavelength = self.center_wavelength
+
+        omega0 = 2 * np.pi * c0 / center_wavelength
+
+        field_shape = self.components[0].field.Ex.shape
+
+        Ex_sum = np.zeros(field_shape, dtype=np.complex128)
+        Ey_sum = np.zeros(field_shape, dtype=np.complex128)
+
+        for i, comp in enumerate(self.components):
+            field = comp.field
+
+            if field.Ex.shape != field_shape:
+                raise ValueError(
+                    f"Component {i} Ex shape {field.Ex.shape} does not match {field_shape}."
+                )
+
+            omega = 2 * np.pi * c0 / comp.wavelength
+            domega = omega - omega0
+
+            temporal = np.exp(-1j * domega * t)
+            amp = np.sqrt(comp.weight)
+
+            if use_spectral_phase:
+                Ex_spec = np.abs(field.Ex) * np.exp(1j * field.spectral_phase_x)
+                Ey_spec = np.abs(field.Ey) * np.exp(1j * field.spectral_phase_y)
+            else:
+                Ex_spec = field.Ex
+                Ey_spec = field.Ey
+
+            Ex_sum += amp * Ex_spec * temporal
+            Ey_sum += amp * Ey_spec * temporal
+
+        return Ex_sum, Ey_sum
 
     def intensity(self) -> np.ndarray:
         """

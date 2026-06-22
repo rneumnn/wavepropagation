@@ -14,8 +14,20 @@ class element_base:
         self.name = "BaseElement"
         self.description = "Base class for optical elements. Subclasses should implement the apply method."
         self.radial_symmetric = radial_symmetric
+        element_base.n_element += 1
         self._update_properties()
         return
+    
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+
+        if "apply" in cls.__dict__:
+            raise TypeError(
+                f"{cls.__name__} must not override apply(). "
+                "Override _apply() instead."
+            )
+
+        cls.n_element = 0
     
     def _update_properties(self):
         self.__class__.n_element += 1
@@ -25,8 +37,49 @@ class element_base:
         if not self.radial_symmetric and isinstance(field, RadialField):
             raise ValueError(f"{self.name} is not a radial symmetric element and cannot be applied to RadialField instances.")
 
-    def apply(self, field:Field|RadialField)->Field|RadialField:
-        raise NotImplementedError("Subclasses should implement this method.")
+    def apply(self, field: Field | RadialField) -> Field | RadialField:
+        """
+        Public method. Do not override this in subclasses.
+
+        Standard element logic goes here.
+        """
+        self._radial_symmetric_check(field)
+
+        if self.debug:
+            print(f"Applying {self.name}")
+
+        out = self._apply(field)
+        out.last_element = self
+
+        return out
+
+    def _apply(self, field: Field | RadialField) -> Field | RadialField:
+        """
+        Subclasses must implement this instead of apply().
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement _apply(), not apply()."
+        )
+    
+    @classmethod
+    def reset_element_counter(cls):
+        cls.n_element = 0
+
+    @classmethod
+    def all_subclasses(cls)->list[element_base]:
+        subclasses = []
+
+        for subclass in cls.__subclasses__():
+            subclasses.append(subclass)
+            subclasses.extend(subclass.all_subclasses())
+
+        return subclasses
+    
+    @classmethod
+    def reset_all_element_counters(cls):
+        for element_class in cls.all_subclasses():
+            element_class.reset_element_counter()
+
     
 #Lenses
     
@@ -46,14 +99,15 @@ class ThinLens(element_base):
             # implement as new class if needed
         return self.f0
 
-    def apply(self, field: Field|RadialField) -> Field|RadialField:
-        self._radial_symmetric_check(field)
+    def _apply(self, field: Field|RadialField) -> Field|RadialField:
         g = field.grid
         f = self.focal_length(field.wavelength)
-        phase = np.exp(-1j * field.k * g.R**2 / (2 * f))
+        phase = field.k * g.R**2 / (2 * f)
         out = field.copy()
-        out.Ex *= phase
-        out.Ey *= phase
+        out.Ex *= np.exp(-1j * phase)
+        out.Ey *= np.exp(-1j * phase)
+        out.spectral_phase_x += phase
+        out.spectral_phase_y += phase
         return out
     
 class IdealChromaticLens(ThinLens):
@@ -74,15 +128,15 @@ class IdealChromaticLens(ThinLens):
         f = self.f0 * ((self.n_ref-1)/(self.n_material(wavelength)-1))
         return f
 
-    def apply(self, field:Field|RadialField):
-        self._radial_symmetric_check(field)
+    def _apply(self, field:Field|RadialField):
         g = field.grid
         f = self.focal_length(field.wavelength)
-        phi = field.k * g.R**2 / (2 * f)
-        phase = np.exp(-1j * phi)
+        phase = field.k * g.R**2 / (2 * f)
         out = field.copy()
-        out.Ex *= phase
-        out.Ey *= phase
+        out.Ex *= np.exp(-1j * phase)
+        out.Ey *= np.exp(-1j * phase)
+        out.spectral_phase_x += phase
+        out.spectral_phase_y += phase
         return out
     
     # @staticmethod
@@ -250,8 +304,7 @@ class ThinRealLens(element_base):
         axs[1].legend()
         plt.show()
 
-    def apply(self, field: Field|RadialField) -> Field:
-        self._radial_symmetric_check(field)
+    def _apply(self, field: Field|RadialField) -> Field:
         self.n_environment = field.n_medium
         #f = self.focal_length(field.wavelength)
         phase_lens, phase_environment = self.calculate_material_phase(field)
@@ -585,8 +638,7 @@ class ThickRealLens(element_base):
 
         return out
 
-    def apply(self, field: Field) -> Field:
-        self._radial_symmetric_check(field)
+    def _apply(self, field: Field) -> Field:
         g = field.grid
         wl = field.wavelength
 
@@ -741,8 +793,7 @@ class PhaseGrating(element_base):
             return float(self.modulation(wavelength))
         return float(self.modulation)
 
-    def apply(self, field: Field) -> Field:
-        self._radial_symmetric_check(field)
+    def _apply(self, field: Field) -> Field:
         g = field.grid
         U = g.X * np.cos(self.angle) + g.Y * np.sin(self.angle)
 
@@ -816,8 +867,7 @@ class ReliefPhaseGrating(element_base):
 
         raise ValueError(f"Unknown profile: {self.profile}")
 
-    def apply(self, field: FieldBase) -> Field:
-        self._radial_symmetric_check(field)
+    def _apply(self, field: FieldBase) -> Field:
         n_g = self.refractive_index_at(field.wavelength)
         h = self.height_profile(field)
 
@@ -840,8 +890,7 @@ class Polarizer(element_base):
         self.theta = theta
         self.description = f"Linear polarizer with transmission axis at {theta} radians."
 
-    def apply(self, field: FieldBase) -> FieldBase:
-        self._radial_symmetric_check(field)
+    def _apply(self, field: FieldBase) -> FieldBase:
         c = np.cos(self.theta)
         s = np.sin(self.theta)
 
@@ -871,14 +920,13 @@ class WavePlate(element_base):
         self.retardance = retardance
         self.description = f"Wave plate with fast axis at {theta} radians and retardance {retardance} radians."
 
-    def apply(self, field: FieldBase):
+    def _apply(self, field: FieldBase):
         """
         needs to be rechecked for the right formular!!!! do it when adding jones formalism to field!
         Parameters
             :param field: 
             :type field: _type_
         """
-        self._radial_symmetric_check(field)
         c = np.cos(self.theta)
         s = np.sin(self.theta)
         e = np.exp(1j * self.retardance)
@@ -958,7 +1006,7 @@ class CircularAperture(element_base):
 
         return mask
 
-    def apply(self, field: FieldBase):
+    def _apply(self, field: FieldBase):
         mask = self.transmission(field).astype(np.complex128)
 
         out = field.copy()
@@ -976,8 +1024,7 @@ class ScalarMask(element_base):
         self.transmission_function = transmission_function
         self.description = "Scalar mask with arbitrary transmission function."
 
-    def apply(self, field: FieldBase):
-        self._radial_symmetric_check(field)
+    def _apply(self, field: FieldBase):
         t = self.transmission_function(field.grid.X, field.grid.Y)
         out = field.copy()
         out.Ex *= t
@@ -1025,8 +1072,7 @@ class PulseFrontModulation(element_base):
         self.pft_y = pft_y
         self.gdd_quadratic = gdd_quadratic
 
-    def apply(self, field: Field) -> Field:
-        self._radial_symmetric_check(field)
+    def _apply(self, field: Field) -> Field:
         g = field.grid
 
         omega = 2 * np.pi * c / field.wavelength
@@ -1059,8 +1105,7 @@ class PulseFrontModulation(element_base):
             self.n_env = n_env
             self.description = f"Material phase with {material.name} and thickness function."
 
-        def apply(self, field):
-            self._radial_symmetric_check(field)
+        def _apply(self, field):
             g = field.grid
             wl = field.wavelength
 

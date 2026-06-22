@@ -12,7 +12,8 @@ class FieldBase:
         Ey=None,
         n_medium=1.0,
         spectral_phase_x=None,
-        spectral_phase_y=None
+        spectral_phase_y=None,
+        last_element = None
     ):
         self.grid: Grid|RadialGrid = grid
         self.wavelength = float(wavelength)
@@ -32,6 +33,9 @@ class FieldBase:
         self.Ey = FieldBase._as_array_or_zeros(Ey, shape, np.complex128)
         self.spectral_phase_x = FieldBase._as_array_or_zeros(spectral_phase_x, shape, float)
         self.spectral_phase_y = FieldBase._as_array_or_zeros(spectral_phase_y, shape, float)
+
+        #last element applied to the field -> element_base
+        self.last_element = last_element
 
     @property
     def omega(self):
@@ -116,6 +120,7 @@ class FieldBase:
             n_medium=self.n_medium,
             spectral_phase_x=self.spectral_phase_x.copy(),
             spectral_phase_y=self.spectral_phase_y.copy(),
+            last_element = self.last_element
         )
     
     def intensity(self) -> np.ndarray:
@@ -371,7 +376,8 @@ Notes
         Ey=None,
         n_medium=1.0,
         spectral_phase_x=None,
-        spectral_phase_y=None
+        spectral_phase_y=None,
+        last_element = None
     ):
         super().__init__(
             grid=grid,
@@ -380,7 +386,8 @@ Notes
             Ey=Ey,
             n_medium=n_medium,
             spectral_phase_x=spectral_phase_x,
-            spectral_phase_y=spectral_phase_y
+            spectral_phase_y=spectral_phase_y,
+            last_element=last_element
         )
             
 class RadialField(FieldBase):
@@ -397,7 +404,8 @@ Field representation for monochromatic vectorial optical fields on a 1D radial g
         Ey=None,
         n_medium=1.0,
         spectral_phase_x=None,
-        spectral_phase_y=None
+        spectral_phase_y=None,
+        last_element = None
     ):
         super().__init__(
             grid=grid,
@@ -406,7 +414,8 @@ Field representation for monochromatic vectorial optical fields on a 1D radial g
             Ey=Ey,
             n_medium=n_medium,
             spectral_phase_x=spectral_phase_x,
-            spectral_phase_y=spectral_phase_y
+            spectral_phase_y=spectral_phase_y,
+            last_element=last_element
         )
     
     def jones_vector(self) -> np.ndarray:
