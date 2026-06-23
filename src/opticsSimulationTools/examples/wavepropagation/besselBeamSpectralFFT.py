@@ -1,11 +1,11 @@
 from opticsSimulationTools.wavepropagation.field import Field
 from opticsSimulationTools.wavepropagation.grid import Grid
 from opticsSimulationTools.wavepropagation.sources.source2d import polychromaticSource
-from opticsSimulationTools.spectralUtils import gaussian_spectrum_omega
-from opticsSimulationTools.wavepropagation.opticalSystem import OpticalSystem
-from opticsSimulationTools.wavepropagation.elements import IdealChromaticLens, PhaseGrating, CircularAperture
+from opticsSimulationTools.core.spectralUtils import gaussian_spectrum_omega
+from opticsSimulationTools.opticalSystem import OpticalSystem
+from opticsSimulationTools.elements import IdealChromaticLens, PhaseGrating, CircularAperture
 from opticsSimulationTools.wavepropagation.propagate import AngularSpectrumPropagate as Propagate
-from opticsSimulationTools.materials.materials import BK7, AIR
+from opticsSimulationTools.core.materials.materials import BK7, AIR
 import matplotlib.pyplot as plt
 
 def main():

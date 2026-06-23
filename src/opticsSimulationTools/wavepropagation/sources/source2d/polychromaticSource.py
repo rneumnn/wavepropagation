@@ -2,8 +2,8 @@ from ...field import Field
 from ...grid import Grid
 from ...polychromaticField import SpectralComponent, PolychromaticField
 from .monochromaticSource import gaussian_beam, laguerre_gaussian, bessel_beam
-from ....spectralUtils import Spectrum
-from ....materials import materials
+from ....core.spectralUtils import Spectrum
+from ....core.materials import materials
 import numpy as np
 from scipy.constants import c
 

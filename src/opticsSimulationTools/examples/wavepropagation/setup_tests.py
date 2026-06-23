@@ -1,9 +1,9 @@
 import numpy as np
-from opticsSimulationTools.wavepropagation.elements import ThinRealLens
+from opticsSimulationTools.elements import ThinRealLens
 from opticsSimulationTools.wavepropagation.analyzing import get_phase_critical_radius
 from opticsSimulationTools.wavepropagation.grid import PyHankRadialGrid
 from opticsSimulationTools.wavepropagation.hankelBackend import PyHankBackend
-from opticsSimulationTools.materials.materials import FUSED_SILICA
+from opticsSimulationTools.core.materials.materials import FUSED_SILICA
 from opticsSimulationTools.wavepropagation.sources.radialSymmetric.monochromaticSource import gaussian_beam
 import matplotlib.pyplot as plt
 

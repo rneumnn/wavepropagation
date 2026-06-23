@@ -1,8 +1,8 @@
 from ...grid import RadialGrid
 from ...polychromaticField import SpectralComponent, PolychromaticField
 from .monochromaticSource import gaussian_beam
-from ....spectralUtils import Spectrum
-from ....materials import materials
+from ....core.spectralUtils import Spectrum
+from ....core.materials import materials
 import numpy as np
 from scipy.constants import c
 

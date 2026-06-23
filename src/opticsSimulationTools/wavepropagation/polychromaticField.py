@@ -3,10 +3,10 @@ import numpy as np
 from scipy.constants import c as c0
 from .field import Field, RadialField
 from .grid import Grid, RadialGrid, QDHTRadialGrid
-from ..spectralUtils import Spectrum
+from ..core.spectralUtils import Spectrum
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
-from .elements import element_base
+from ..elements import element_base
 
 def is_visible(wavelength)->bool:
         if (wavelength>380e-9) and (wavelength<780e-9):

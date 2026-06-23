@@ -1,7 +1,7 @@
 from .wavepropagation.field import Field, RadialField, FieldBase
 import numpy as np
 from scipy.constants import c, pi
-from .materials.materialCore import RefractiveIndexFunction
+from .core.materials.materialCore import RefractiveIndexFunction
 
 
 class element_base:

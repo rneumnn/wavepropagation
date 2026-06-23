@@ -1,4 +1,4 @@
-from opticsSimulationTools.wavepropagation.elements import CircularAperture
+from opticsSimulationTools.elements import CircularAperture
 import opticsSimulationTools.wavepropagation.sources.source2d.monochromaticSource as MS
 from opticsSimulationTools.wavepropagation.grid import Grid
 import matplotlib.pyplot as plt

@@ -1,12 +1,12 @@
 from opticsSimulationTools.wavepropagation.grid import RadialGrid, Grid
-from opticsSimulationTools.wavepropagation.opticalSystem import OpticalSystem
-from opticsSimulationTools.wavepropagation.elements import ThinRealLens, ThinLens, ThickRealLens, element_base
+from opticsSimulationTools.opticalSystem import OpticalSystem
+from opticsSimulationTools.elements import ThinRealLens, ThinLens, ThickRealLens, element_base
 from opticsSimulationTools.wavepropagation.sources.radialSymmetric.monochromaticSource import gaussian_beam
 from opticsSimulationTools.wavepropagation.sources.radialSymmetric.polychromaticSource import polychromatic_gaussian_beam
 from opticsSimulationTools.wavepropagation.sources.source2d import polychromaticSource
-from opticsSimulationTools import spectralUtils
+from opticsSimulationTools.core import spectralUtils
 from opticsSimulationTools.wavepropagation.propagate import HankelAngularSpectrumPropagate, AngularSpectrumPropagate
-from opticsSimulationTools.materials.materials import BK7, AIR
+from opticsSimulationTools.core.materials.materials import BK7, AIR
 from opticsSimulationTools.wavepropagation.hankelBackend import UnitaryQDHTBackend
 from matplotlib import pyplot as plt
 import numpy as np

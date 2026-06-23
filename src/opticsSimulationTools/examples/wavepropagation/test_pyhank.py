@@ -1,7 +1,7 @@
 from opticsSimulationTools.wavepropagation.grid import RadialGrid, PyHankRadialGrid, Grid
 from opticsSimulationTools.wavepropagation.sources.radialSymmetric.monochromaticSource import gaussian_beam
 from opticsSimulationTools.wavepropagation.sources.source2d.monochromaticSource import gaussian_beam as gauss2d
-from opticsSimulationTools.materials import materials
+from opticsSimulationTools.core.materials import materials
 from opticsSimulationTools.wavepropagation.hankelBackend import PyHankBackend
 from opticsSimulationTools.wavepropagation.propagate import HankelAngularSpectrumPropagate, AngularSpectrumPropagate
 from opticsSimulationTools.opticalSystem import OpticalSystem as OS
