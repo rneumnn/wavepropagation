@@ -1,5 +1,5 @@
-from .core import RayBundle
-from .surfaces import Surface
+from .backend.core import RayBundle
+from .backend.surfaces import Surface
 
 def propagate_to_surface(rays:RayBundle, surface:Surface, n_medium):
     t, valid = surface.intersect(rays)

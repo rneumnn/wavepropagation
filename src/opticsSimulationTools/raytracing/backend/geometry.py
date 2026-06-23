@@ -43,3 +43,20 @@ class Plane:
     def __post_init__(self):
         self.position = np.asarray(self.position, dtype=float)
         self.normal = normalize(np.asarray(self.normal, dtype=float))
+
+        
+
+def orient_normal_against_ray(direction: np.ndarray, normal: np.ndarray) -> np.ndarray:
+    """
+    Flip normals so that they point against the incoming ray direction.
+
+    direction: (..., 3) - RayBundle direction vectors
+    normal:    (..., 3) - Normal vectors of surface at the intersection points
+    """
+    dot = np.sum(direction * normal, axis=-1)
+
+    # If dot > 0, normal points roughly in same direction as ray.
+    # Flip it so it points against the ray.
+    flip = dot > 0
+
+    return np.where(flip[..., None], -normal, normal)

@@ -1,5 +1,5 @@
-from opticsSimulationTools.raytracing.surfaces import SphericalSagSurface, spherical_sag
-from opticsSimulationTools.raytracing.core import RayBundle
+from opticsSimulationTools.raytracing.backend.surfaces import SphericalSagSurface, spherical_sag
+from opticsSimulationTools.raytracing.backend.core import RayBundle
 import numpy as np
 R = 1.0
 x = 0.01

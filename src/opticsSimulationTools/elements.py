@@ -2,6 +2,7 @@ from .wavepropagation.field import Field, RadialField, FieldBase
 import numpy as np
 from scipy.constants import c, pi
 from .core.materials.materialCore import RefractiveIndexFunction
+from .raytracing.backend.core import RayBundle
 
 
 class element_base:
@@ -24,7 +25,7 @@ class element_base:
         if "apply" in cls.__dict__:
             raise TypeError(
                 f"{cls.__name__} must not override apply(). "
-                "Override _apply() instead."
+                "Override _apply_for_wavepropagation() instead."
             )
 
         cls.n_element = 0
@@ -37,28 +38,47 @@ class element_base:
         if not self.radial_symmetric and isinstance(field, RadialField):
             raise ValueError(f"{self.name} is not a radial symmetric element and cannot be applied to RadialField instances.")
 
-    def apply(self, field: Field | RadialField) -> Field | RadialField:
+    def apply(self, input: Field | RadialField) -> Field | RadialField:
         """
         Public method. Do not override this in subclasses.
 
         Standard element logic goes here.
         """
-        self._radial_symmetric_check(field)
+        if isinstance(input, FieldBase):
+            self._radial_symmetric_check(input)
+            if self.debug:
+                print(f"Applying {self.name}")
+            out = self._apply_for_wavepropagation(input)
+            out.last_element = self
 
-        if self.debug:
-            print(f"Applying {self.name}")
+        elif isinstance(input, RayBundle):
+            if self.debug:
+                print(f"Applying {self.name}")
 
-        out = self._apply(field)
-        out.last_element = self
+            out = self._apply_for_raytracing(input)
+            out.last_element = self
+
+        else:
+            raise TypeError(
+                f"{self.name} cannot be applied to input of type {type(input).__name__}."
+            )
 
         return out
 
-    def _apply(self, field: Field | RadialField) -> Field | RadialField:
+    def _apply_for_wavepropagation(self, field: Field | RadialField) -> Field | RadialField:
         """
         Subclasses must implement this instead of apply().
         """
         raise NotImplementedError(
-            f"{self.__class__.__name__} must implement _apply(), not apply()."
+            f"{self.__class__.__name__} must implement _apply_for_wavepropagation() to be able to be used for wavepropagation, not apply()."
+        )
+    
+    def _apply_for_raytracing(self, rays: RayBundle)-> RayBundle:
+        """
+        Subclasses must implement this instead of apply().
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement _apply_for_raytracing() to be able to be used for raytracing, not apply()."
         )
     
     @classmethod
@@ -99,7 +119,7 @@ class ThinLens(element_base):
             # implement as new class if needed
         return self.f0
 
-    def _apply(self, field: Field|RadialField) -> Field|RadialField:
+    def _apply_for_wavepropagation(self, field: Field|RadialField) -> Field|RadialField:
         g = field.grid
         f = self.focal_length(field.wavelength)
         phase = field.k * g.R**2 / (2 * f)
@@ -128,7 +148,7 @@ class IdealChromaticLens(ThinLens):
         f = self.f0 * ((self.n_ref-1)/(self.n_material(wavelength)-1))
         return f
 
-    def _apply(self, field:Field|RadialField):
+    def _apply_for_wavepropagation(self, field:Field|RadialField):
         g = field.grid
         f = self.focal_length(field.wavelength)
         phase = field.k * g.R**2 / (2 * f)
@@ -304,7 +324,7 @@ class ThinRealLens(element_base):
         axs[1].legend()
         plt.show()
 
-    def _apply(self, field: Field|RadialField) -> Field:
+    def _apply_for_wavepropagation(self, field: Field|RadialField) -> Field:
         self.n_environment = field.n_medium
         #f = self.focal_length(field.wavelength)
         phase_lens, phase_environment = self.calculate_material_phase(field)
@@ -638,7 +658,7 @@ class ThickRealLens(element_base):
 
         return out
 
-    def _apply(self, field: Field) -> Field:
+    def _apply_for_wavepropagation(self, field: Field) -> Field:
         g = field.grid
         wl = field.wavelength
 
@@ -793,7 +813,7 @@ class PhaseGrating(element_base):
             return float(self.modulation(wavelength))
         return float(self.modulation)
 
-    def _apply(self, field: Field) -> Field:
+    def _apply_for_wavepropagation(self, field: Field) -> Field:
         g = field.grid
         U = g.X * np.cos(self.angle) + g.Y * np.sin(self.angle)
 
@@ -867,7 +887,7 @@ class ReliefPhaseGrating(element_base):
 
         raise ValueError(f"Unknown profile: {self.profile}")
 
-    def _apply(self, field: FieldBase) -> Field:
+    def _apply_for_wavepropagation(self, field: FieldBase) -> Field:
         n_g = self.refractive_index_at(field.wavelength)
         h = self.height_profile(field)
 
@@ -890,7 +910,7 @@ class Polarizer(element_base):
         self.theta = theta
         self.description = f"Linear polarizer with transmission axis at {theta} radians."
 
-    def _apply(self, field: FieldBase) -> FieldBase:
+    def _apply_for_wavepropagation(self, field: FieldBase) -> FieldBase:
         c = np.cos(self.theta)
         s = np.sin(self.theta)
 
@@ -920,7 +940,7 @@ class WavePlate(element_base):
         self.retardance = retardance
         self.description = f"Wave plate with fast axis at {theta} radians and retardance {retardance} radians."
 
-    def _apply(self, field: FieldBase):
+    def _apply_for_wavepropagation(self, field: FieldBase):
         """
         needs to be rechecked for the right formular!!!! do it when adding jones formalism to field!
         Parameters
@@ -1006,7 +1026,7 @@ class CircularAperture(element_base):
 
         return mask
 
-    def _apply(self, field: FieldBase):
+    def _apply_for_wavepropagation(self, field: FieldBase):
         mask = self.transmission(field).astype(np.complex128)
 
         out = field.copy()
@@ -1024,7 +1044,7 @@ class ScalarMask(element_base):
         self.transmission_function = transmission_function
         self.description = "Scalar mask with arbitrary transmission function."
 
-    def _apply(self, field: FieldBase):
+    def _apply_for_wavepropagation(self, field: FieldBase):
         t = self.transmission_function(field.grid.X, field.grid.Y)
         out = field.copy()
         out.Ex *= t
@@ -1072,7 +1092,7 @@ class PulseFrontModulation(element_base):
         self.pft_y = pft_y
         self.gdd_quadratic = gdd_quadratic
 
-    def _apply(self, field: Field) -> Field:
+    def _apply_for_wavepropagation(self, field: Field) -> Field:
         g = field.grid
 
         omega = 2 * np.pi * c / field.wavelength
@@ -1105,7 +1125,7 @@ class PulseFrontModulation(element_base):
             self.n_env = n_env
             self.description = f"Material phase with {material.name} and thickness function."
 
-        def _apply(self, field):
+        def _apply_for_wavepropagation(self, field):
             g = field.grid
             wl = field.wavelength
 

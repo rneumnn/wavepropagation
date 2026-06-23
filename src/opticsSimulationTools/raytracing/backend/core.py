@@ -4,8 +4,8 @@ Implements the core elements for raytracing.
 
 from dataclasses import dataclass
 import numpy as np
-from ..core.materials.materialCore import RefractiveIndexFunction
-from ..core.materials.materials import AIR
+from ...core.materials.materialCore import RefractiveIndexFunction
+from ...core.materials.materials import AIR
 from .geometry import normalize, Plane
 
 @dataclass
@@ -29,6 +29,7 @@ class RayBundle:
     phase: np.ndarray
     valid: np.ndarray
     n_medium: RefractiveIndexFunction = AIR
+    last_element = None
 
     def copy(self):
         return RayBundle(

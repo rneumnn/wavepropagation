@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from .field import RadialField, Field, FieldBase
 from .polychromaticField import PolychromaticField, is_visible
+from ..core.vizualizing import wavelength_to_falsecolor, wavelength_to_rgb
 import numpy as np
 #from .utils import is_visible as isV
 
@@ -47,9 +48,9 @@ def plot_radial_field_Ex(field:RadialField, color=None, weight = 1, fig:Figure =
     
     if color is None:
         if is_visible(field.wavelength):
-            color = PolychromaticField.wavelength_to_rgb(field.wavelength*1e9)
+            color = wavelength_to_rgb(field.wavelength*1e9)
         else:
-            color = PolychromaticField.wavelength_to_falsecolor(
+            color = wavelength_to_falsecolor(
                 field.wavelength*1e9,
                 wavelength_max_nm=maxWL,
                 wavelength_min_nm=minWL,
@@ -77,9 +78,9 @@ def plot_radial_field_Ey(field:RadialField, color=None, weight = 1, fig:Figure =
     
     if color is None:
         if is_visible(field.wavelength):
-            color = PolychromaticField.wavelength_to_rgb(field.wavelength*1e9)
+            color = wavelength_to_rgb(field.wavelength*1e9)
         else:
-            color = PolychromaticField.wavelength_to_falsecolor(
+            color = wavelength_to_falsecolor(
                 field.wavelength*1e9,
                 wavelength_max_nm=maxWL,
                 wavelength_min_nm=minWL,
@@ -108,9 +109,9 @@ def plot_radial_intensity(field:RadialField, color=None, weight = 1, fig:Figure 
 
     if color is None:
         if is_visible(field.wavelength):
-            color = PolychromaticField.wavelength_to_rgb(field.wavelength*1e9)
+            color = wavelength_to_rgb(field.wavelength*1e9)
         else:
-            color = PolychromaticField.wavelength_to_falsecolor(
+            color = wavelength_to_falsecolor(
                 field.wavelength*1e9,
                 wavelength_max_nm=maxWL,
                 wavelength_min_nm=minWL,
