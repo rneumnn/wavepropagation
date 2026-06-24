@@ -163,6 +163,9 @@ class SphericalSagSurface(Surface):
             surface_function=sag_function,
         )
 
+    def z_radial(self, r:np.ndarray[float]):
+        return spherical_sag(self.R, r)
+
     def normal_at_points(self, points: np.ndarray) -> np.ndarray:
         """
         Calculate outward surface normals at global 3D points.

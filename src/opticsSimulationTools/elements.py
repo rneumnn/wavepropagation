@@ -2,8 +2,11 @@ from .wavepropagation.field import Field, RadialField, FieldBase
 import numpy as np
 from scipy.constants import c, pi
 from .core.materials.materialCore import RefractiveIndexFunction
-from .raytracing.backend.core import RayBundle
-
+from .raytracing.backend.core import RayBundle, Surface, RayTraceResult
+from .raytracing.backend.calculations import refract_rays, reflect_through, reflect
+from .raytracing.propagation import propagate_to_surface
+from .raytracing.backend.surfaces import SphericalSagSurface, PlaneSurface
+from .raytracing.backend.geometry import orient_normal_against_ray
 
 class element_base:
     """
@@ -11,11 +14,14 @@ class element_base:
     """
     debug = True
     n_element = 0
-    def __init__(self, radial_symmetric=False):
+    def __init__(self, radial_symmetric=False, center_position:np.ndarray[float]|None = None, surfaces:tuple[Surface]|None = None):
         self.name = "BaseElement"
         self.description = "Base class for optical elements. Subclasses should implement the apply method."
         self.radial_symmetric = radial_symmetric
+        self.surfaces = surfaces    #enables raytracing for element
+        self.center_position = center_position    #enables raytracing for element
         element_base.n_element += 1
+        self._make_dummy_surface()
         self._update_properties()
         return
     
@@ -37,8 +43,19 @@ class element_base:
     def _radial_symmetric_check(self, field:Field|RadialField):
         if not self.radial_symmetric and isinstance(field, RadialField):
             raise ValueError(f"{self.name} is not a radial symmetric element and cannot be applied to RadialField instances.")
+        
+    def _make_dummy_surface(self):
+        """makes a flat dummy surface for the element"""
+        if (self.surfaces is None) and (self.center_position is not None):
+            self.surfaces = (PlaneSurface(self.center_position, normal=np.array((0,0,-1))))
+        
+    @property
+    def _raytracing_available(self):
+        if (self.surfaces is None) | (self.center_position is None):
+            return False
+        return True
 
-    def apply(self, input: Field | RadialField) -> Field | RadialField:
+    def apply(self, input: FieldBase | RayBundle) -> FieldBase | RayTraceResult:
         """
         Public method. Do not override this in subclasses.
 
@@ -54,9 +71,9 @@ class element_base:
         elif isinstance(input, RayBundle):
             if self.debug:
                 print(f"Applying {self.name}")
-
+            if not self._raytracing_available:
+                raise NotImplementedError(f"{type(self)} is not available for raytracing. Surfaces and Position for the element must be defined! {self.surfaces}, {self.position}")
             out = self._apply_for_raytracing(input)
-            out.last_element = self
 
         else:
             raise TypeError(
@@ -73,7 +90,7 @@ class element_base:
             f"{self.__class__.__name__} must implement _apply_for_wavepropagation() to be able to be used for wavepropagation, not apply()."
         )
     
-    def _apply_for_raytracing(self, rays: RayBundle)-> RayBundle:
+    def _apply_for_raytracing(self, rays: RayBundle)-> RayTraceResult:
         """
         Subclasses must implement this instead of apply().
         """
@@ -108,8 +125,8 @@ class ThinLens(element_base):
     A thin lens element that applies a quadratic phase shift to the field. No chromatic aberration is included in this simple model, so the focal length is independent of wavelength.
     If the medium refractive index, f0 will be as given.
     """
-    def __init__(self, f0: float):
-        super().__init__(radial_symmetric = True)
+    def __init__(self, f0: float, center_position = None):
+        super().__init__(radial_symmetric = True, center_position=center_position)
         self.f0 = f0
         self.description = f"Thin lens with focal length {f0} m. No chromatic aberration."
 
@@ -135,8 +152,8 @@ class IdealChromaticLens(ThinLens):
     A lens with a wavelength-dependent focal length to model chromatic aberration. The focal length is defined by a simple dispersion relation, but can be modified to fit specific materials or designs.
     The material phase dont properly behaves. Only supposed to use for chromatic aberration, not for modeling real lenses with material phase. For that use the RealLens class.
     """
-    def __init__(self, f0: float, n_material: RefractiveIndexFunction, ref_wavelength: float = 550e-9):
-        super().__init__(f0)
+    def __init__(self, f0: float, n_material: RefractiveIndexFunction, ref_wavelength: float = 550e-9, center_position = None):
+        super().__init__(f0, center_position=center_position)
         self.description = f"Thin lens with wavelength-dependent focal length to model chromatic aberration. Focal length at reference wavelength {ref_wavelength*1e9} nm is {f0} m. Refractive index function n(wavelength) is used to calculate the focal length dispersion."
         if callable(n_material):
             self.n_ref = n_material(ref_wavelength)
@@ -178,24 +195,25 @@ class ThinRealLens(element_base):
     Implements a realistic lens by given radius of curvature and refractive index. The focal length is calculated using the lensmaker's formula, which can be used to model chromatic aberration if the refractive index is wavelength-dependent.
     Also takes to account the material phase based on the thickness of the lens and the sourrounding medium.
     It is a thin lens model, so the material phase is applied as a single phase mask at the lens plane. This is an approximation that is valid for thin lenses, but may not be accurate for thick lenses or strong focusing.
+    For raytracing use ThickRealLens.
 
     Parameters
     ----------
     R1: float - Radius (in meters) of curvature of the first surface (positive for right curved, negative for left curved, zero for flat)
     R2: float - Radius (in meters) of curvature of the second surface (positive for right curved, negative for left curved, zero for flat)
     center_thickness: float - Thickness (in meters) of the lens at its center
-    relative_aperture: float - Relative aperture of the lens
+    aperture: float - aperture of the lens [m]
     n: float or RefractiveIndexFunction - Refractive index of the lens material
     n_environment: float or RefractiveIndexFunction - Refractive index of the surrounding medium
     surfaceFunction: callable or None - Custom function to define the lens surface shape
     """
-    def __init__(self, R1:float = 0, R2:float = 0, center_thickness:float = 0, relative_aperture:float = 1, n:RefractiveIndexFunction = 1, n_environment:float|RefractiveIndexFunction = 1, surfaceFunction = None):
+    def __init__(self, R1:float = 0, R2:float = 0, center_thickness:float = 0, aperture:float = 1, n:RefractiveIndexFunction = 1, n_environment:float|RefractiveIndexFunction = 1, surfaceFunction = None):
         super().__init__(radial_symmetric = True)
-        self.description = f"Thin lens with realistic material phase. R1={R1} m, R2={R2} m, center thickness={center_thickness} m, relative aperture={relative_aperture}, n={n}, n_environment={n_environment}. Surface function can be provided for custom lens shapes, otherwise spherical surfaces are used based on R1 and R2."
+        self.description = f"Thin lens with realistic material phase. R1={R1} m, R2={R2} m, center thickness={center_thickness} m, aperture={aperture} m, n={n}, n_environment={n_environment}. Surface function can be provided for custom lens shapes, otherwise spherical surfaces are used based on R1 and R2."
         self.R1 = R1
         self.R2 = R2
         self.center_thickness = center_thickness
-        self.aperture = relative_aperture
+        self.aperture = aperture
         self.n = n
         self.n_environment = n_environment
         self.surfaceFunction = surfaceFunction
@@ -281,7 +299,7 @@ class ThinRealLens(element_base):
         """
         grid_dim = field.grid.L
         #calculate aperture array
-        lens_aperture_array = np.where(field.grid.R <= self.aperture * grid_dim / 2, 1, 0)
+        lens_aperture_array = np.where(field.grid.R <= self.aperture, 1, 0)
         lens_thickness = self.thickness_function(field.grid.R)*lens_aperture_array
         max_thickness = np.max(lens_thickness)
         self.n_environment = field.n_medium
@@ -369,9 +387,10 @@ class ThickRealLens(element_base):
         R1: float,
         R2: float,
         center_thickness: float,
-        relative_aperture: float,
         n,
+        center_position = None,
         n_environment=None,
+        aperture: float = 1e-2,
         n_slices: int = 64,
         hankel_backend=None
     ):
@@ -391,18 +410,22 @@ class ThickRealLens(element_base):
         center_thickness:
             Lens center thickness [m].
 
-        relative_aperture:
-            Relative aperture (diameter of the aperture divided by the diameter of the grid).
-
         n:
             Lens refractive index.
             Either float or callable n(wavelength).
+
+        center_position:
+            Position of the vertex of the first surface [m]. size (3)
 
         n_environment:
             Surrounding refractive index.
             Either float, callable n(wavelength), or None.
             If None, uses field.n_medium.
-
+        
+        aperture:
+            Absolute aperture [m]
+            Default 1e-2 m
+        
         n_slices:
             Number of longitudinal slices.
         
@@ -413,14 +436,23 @@ class ThickRealLens(element_base):
         self.R1 = R1
         self.R2 = R2
         self.center_thickness = center_thickness
-        self.relative_aperture = relative_aperture
         self.n = n
         self.n_environment = n_environment
+        self.aperture = aperture
         self.n_slices = int(n_slices)
-        self.description = f"Thick lens model with curved surfaces, finite thickness, material dispersion, and surrounding medium. R1={R1} m, R2={R2} m, center thickness={center_thickness} m, relative aperture={relative_aperture}, n={n}, n_environment={n_environment}, n_slices={n_slices}."
+        self.description = f"Thick lens model with curved surfaces, finite thickness, material dispersion, and surrounding medium. R1={R1} m, R2={R2} m, center thickness={center_thickness} m, relative aperture={aperture}, n={n}, n_environment={n_environment}, n_slices={n_slices}."
         self.hankel_backend = hankel_backend
+        self.center_position = center_position
         if self.n_slices <= 0:
             raise ValueError("n_slices must be positive.")
+        
+        self.S1 = SphericalSagSurface(center_position=self.center_position,
+                                 R = self.R1, 
+                                 aperture_radius=self.aperture)
+        self.S2 = SphericalSagSurface(center_position=self.center_position + np.asarray((0,0,self.center_thickness)),
+                                 R = self.R2, 
+                                 aperture_radius=self.aperture)
+        self.surfaces=(self.S1,self.S2)
 
     def _n_value(self, n, wavelength: float) -> float:
         if callable(n):
@@ -436,32 +468,6 @@ class ThickRealLens(element_base):
 
         return self._n_value(self.n_environment, field.wavelength)
 
-    @staticmethod
-    def spherical_sag(R: float, r: np.ndarray) -> np.ndarray:
-        """
-        Spherical sag function.
-
-        The surface vertex is at z = 0.
-
-        For R = 0, returns a flat surface.
-
-        This uses:
-            sag = R - sign(R) * sqrt(R^2 - r^2)
-
-        Valid only where r <= |R|.
-        Outside that region, NaN is returned.
-        """
-        if R == 0:
-            return np.zeros_like(r, dtype=float)
-
-        R2 = R**2
-
-        sag = np.full_like(r, np.nan, dtype=float)
-
-        valid = r**2 <= R2
-        sag[valid] = R - np.sign(R) * np.sqrt(R2 - np.power(r, 2)[valid])
-
-        return sag
 
     def surfaces(self, field: Field) -> tuple[np.ndarray, np.ndarray]:
         """
@@ -475,8 +481,8 @@ class ThickRealLens(element_base):
         g = field.grid
         r = g.R
 
-        z1 = self.spherical_sag(self.R1, r)
-        z2 = self.center_thickness + self.spherical_sag(self.R2, r)
+        z1 = self.S1.z_radial(r)
+        z2 = self.center_thickness + self.S2.z_radial(r)
 
         return z1, z2
 
@@ -670,7 +676,7 @@ class ThickRealLens(element_base):
 
         z1, z2 = self.surfaces(field)
 
-        aperture = g.R <= g.R.max() * self.relative_aperture
+        aperture = g.R <= self.aperture
         valid_surfaces = np.isfinite(z1) & np.isfinite(z2) & (z2 >= z1)
         valid = aperture & valid_surfaces
 
@@ -745,6 +751,23 @@ class ThickRealLens(element_base):
         out.n_medium = n_env
 
         return out
+    
+    def _apply_for_raytracing(self, rays:RayBundle):
+        rays_at_s1 = propagate_to_surface(rays=rays,
+                                     surface=self.S1)
+        normals = orient_normal_against_ray(rays_at_s1.directions, self.S1.normal_at_points(rays_at_s1.positions))
+        refracted_rays1 = refract_rays(rays_at_s1, normals, self.n)
+        rays_at_s2 = propagate_to_surface(refracted_rays1, self.S2)
+        normals = orient_normal_against_ray(rays_at_s2.directions, self.S2.normal_at_points(rays_at_s2.positions))
+        refracted_rays2 = refract_rays(rays_at_s2, normals, self.n_environment)
+
+        result = RayTraceResult(
+            rays=refracted_rays2,
+            history=[rays_at_s1,refracted_rays1,rays_at_s2,refracted_rays2],
+            elements=[self]
+        )
+        return result
+        
 
     def plot_geometry(self, field: FieldBase):
         """
