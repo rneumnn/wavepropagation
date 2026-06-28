@@ -1,16 +1,125 @@
-"""
-Implements the core elements for raytracing.
-"""
-
+import numpy as np
+from ..wavepropagation.field import FieldBase, Field, RadialField
 from dataclasses import dataclass
 import numpy as np
-from ...core.materials.materialCore import RefractiveIndexFunction
-from ...core.materials.materials import AIR
-from ...core.spectralUtils import Spectrum
-from .geometry import normalize, Plane, orient_normal_against_ray
+from .materials.materialCore import RefractiveIndexFunction
+from .materials.materials import AIR
+from .spectralUtils import Spectrum
+from ..raytracing.backend.geometry import normalize, Plane, orient_normal_against_ray
 from scipy.constants import c
-from .visualization import plot_surface_xz, plot_raybundle_history_xz
+from ..raytracing.backend.visualization import plot_surface_xz, plot_raybundle_history_xz
 
+class element_base:
+    """
+    Base class for optical elements. Subclasses should implement the apply method.
+    """
+    debug = True
+    n_element = 0
+    def __init__(self, radial_symmetric=False, center_position:np.ndarray[float]|None = None, surfaces:tuple[Surface]|None = None):
+        self.name = "BaseElement"
+        self.description = "Base class for optical elements. Subclasses should implement the apply method."
+        self.radial_symmetric = radial_symmetric
+        self.surfaces = surfaces    #enables raytracing for element
+        self.center_position = center_position    #enables raytracing for element
+        element_base.n_element += 1
+        self._update_properties()
+        return
+    
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+
+        if "apply" in cls.__dict__:
+            raise TypeError(
+                f"{cls.__name__} must not override apply(). "
+                "Override _apply_for_wavepropagation() instead."
+            )
+
+        cls.n_element = 0
+    
+    def _update_properties(self):
+        self.__class__.n_element += 1
+        self.name = f"{self.__class__.__name__}_{self.__class__.n_element}"
+    
+    def _radial_symmetric_check(self, field:Field|RadialField):
+        if not self.radial_symmetric and isinstance(field, RadialField):
+            raise ValueError(f"{self.name} is not a radial symmetric element and cannot be applied to RadialField instances.")
+        
+    @property
+    def _raytracing_available(self):
+        if (self.surfaces is None) | (self.center_position is None):
+            return False
+        return True
+    
+    def plot_to_axes_xz(self, ax, **kwargs):
+        for s in self.surfaces:
+            plot_surface_xz(s,ax, **kwargs)
+
+    def apply(self, input: FieldBase | RayBundle) -> FieldBase | RayTraceResult:
+        """
+        Public method. Do not override this in subclasses.
+
+        Standard element logic goes here.
+        """
+        if isinstance(input, FieldBase):
+            self._radial_symmetric_check(input)
+            if self.debug:
+                print(f"Applying {self.name}")
+            out = self._apply_for_wavepropagation(input)
+            out.last_element = self
+
+        elif isinstance(input, RayBundle):
+            if self.debug:
+                print(f"Applying {self.name}")
+            if not self._raytracing_available:
+                raise NotImplementedError(f"{type(self)} is not available for raytracing. Surfaces and Position for the element must be defined! {self.surfaces}, {self.position}")
+            out = self._apply_for_raytracing(input)
+
+        else:
+            raise TypeError(
+                f"{self.name} cannot be applied to input of type {type(input).__name__}."
+            )
+
+        return out
+
+    def _apply_for_wavepropagation(self, field: Field | RadialField) -> Field | RadialField:
+        """
+        Subclasses must implement this instead of apply().
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement _apply_for_wavepropagation() to be able to be used for wavepropagation, not apply()."
+        )
+    
+    def _apply_for_raytracing(self, rays: RayBundle)-> RayTraceResult:
+        """
+        Subclasses must implement this instead of apply().
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement _apply_for_raytracing() to be able to be used for raytracing, not apply()."
+        )
+    
+    @classmethod
+    def reset_element_counter(cls):
+        cls.n_element = 0
+
+    @classmethod
+    def all_subclasses(cls)->list[element_base]:
+        subclasses = []
+
+        for subclass in cls.__subclasses__():
+            subclasses.append(subclass)
+            subclasses.extend(subclass.all_subclasses())
+
+        return subclasses
+    
+    @classmethod
+    def reset_all_element_counters(cls):
+        for element_class in cls.all_subclasses():
+            element_class.reset_element_counter()
+
+    
+#     """
+# Implements the core elements for raytracing.
+# """
 
 @dataclass
 class RayBundle:
@@ -28,7 +137,7 @@ class RayBundle:
 
     positions: np.ndarray
     directions: np.ndarray
-    wavelength: np.ndarray | float
+    wavelength: np.ndarray
     opl: np.ndarray
     phase: np.ndarray
     valid: np.ndarray
@@ -36,6 +145,7 @@ class RayBundle:
     last_element = None
 
     def __post_init__(self):
+        if type(self.wavelength) == float: self.wavelength = [self.wavelength]
         self.positions = np.asarray(self.positions, dtype=float)
         self.directions = normalize(np.asarray(self.directions, dtype=float))
         self.wavelength = np.asarray(self.wavelength, dtype=float)
@@ -205,7 +315,7 @@ class RayBundle:
         spectrum: Spectrum,
         y: float = 0.0,
         direction=(0.0, 0.0, 1.0),
-        n_medium=AIR.n_function,
+        n_medium:RefractiveIndexFunction=AIR.n_function,
     ):
         """
         Create a spectral collimated ray bundle.
@@ -265,7 +375,7 @@ class RayBundle:
         phi0: float = 0.0,
         endpoint: bool = False,
         direction=(0.0, 0.0, 1.0),
-        n_medium=AIR.n_function,
+        n_medium:RefractiveIndexFunction=AIR.n_function,
     ):
         """
         Create a monochromatic 2D polar ray bundle.
@@ -325,7 +435,7 @@ class RayBundle:
         phi0: float = 0.0,
         endpoint: bool = False,
         direction=(0.0, 0.0, 1.0),
-        n_medium=AIR.n_function,
+        n_medium:RefractiveIndexFunction=AIR.n_function,
     ):
         """
         Create a spectral 2D polar ray bundle.
@@ -587,7 +697,7 @@ class Surface:
 
     surface_counter = 0
 
-    def __init__(self, center_position=None, surface_function=None):
+    def __init__(self, center_position=None, surface_function=None, aperture_radius = None):
         if center_position is None:
             center_position = np.zeros(3, dtype=float)
 
@@ -597,6 +707,7 @@ class Surface:
         Surface._update_surface_counter()
         self.surface_number = Surface.surface_counter
         self.name = f"{type(self).__name__}_{self.surface_number}"
+        self.aperture_radius = aperture_radius
 
     @classmethod
     def _update_surface_counter(cls):
@@ -739,34 +850,102 @@ class Surface:
         normals = orient_normal_against_ray(directions, normals)
 
         return points, normals, valid, t
+
     
 
 class RayOpticalSystem:
-    def __init__(self, elements:list[element_base]|None=None, name="RayOpticalSystem"):
-        self.name = name
-        self.elements = list(elements) if elements is not None else []
+    """
+    Ordered collection of raytracing elements.
 
-    def append(self, element:element_base):
+    Convention
+    ----------
+    Every element used for raytracing must have:
+
+        element.surfaces
+
+    where element.surfaces is a list of Surface objects.
+    """
+
+    def __init__(self, elements: list | None = None, name: str = "RayOpticalSystem"):
+        self.name = name
+        self.elements: list[element_base] = []
+
+        if elements is not None:
+            self.extend(elements)
+
+    def _check_element(self, element):
+        """
+        Check whether an element can be used in this RayOpticalSystem.
+        """
+        if not hasattr(element, "surfaces"):
+            raise TypeError(
+                f"{type(element).__name__} cannot be used for raytracing: "
+                "missing attribute 'surfaces'."
+            )
+
+        surfaces = element.surfaces
+
+        if surfaces is None:
+            raise TypeError(
+                f"{type(element).__name__}.surfaces is None. "
+                "Expected a list of Surface objects."
+            )
+
+        if not isinstance(surfaces, (list,tuple)):
+            raise TypeError(
+                f"{type(element).__name__}.surfaces must be a list or tuple, "
+                f"got {type(surfaces).__name__}."
+            )
+
+    def append(self, element):
+        self._check_element(element)
         self.elements.append(element)
         return self
 
-    def extend(self, elements:list[element_base]):
-        self.elements.extend(elements)
+    def extend(self, elements: list):
+        for element in elements:
+            self.append(element)
         return self
 
-    def trace(
-        self,
-        rays: RayBundle
-    ) -> RayTraceResult:
+    def insert(self, index: int, element):
+        self._check_element(element)
+        self.elements.insert(index, element)
+        return self
+
+    def clear(self):
+        self.elements.clear()
+        return self
+
+    def trace(self, rays: RayBundle) -> RayTraceResult:
+        """
+        Trace a RayBundle through all elements.
+
+        Assumes element.apply(...) returns a RayTraceResult.
+        """
         out = RayTraceResult(
             rays=rays.copy(),
             elements=[],
-            history=[rays.copy()]
+            history=[rays.copy()],
         )
 
         for element in self.elements:
-            # Normalerweise: element.apply(out) -> RayBundle
-            out += element.apply(out)
+            step:RayTraceResult = element.apply(out.rays)
+
+            if isinstance(step, RayBundle):
+                # fallback if an older element still returns just RayBundle
+                step = RayTraceResult(
+                    rays=step.copy(),
+                    elements=[element],
+                    history=[out.rays.copy(), step.copy()],
+                )
+
+            if not isinstance(step, RayTraceResult):
+                raise TypeError(
+                    f"{type(element).__name__}.apply(...) must return "
+                    f"RayTraceResult or RayBundle, got {type(step).__name__}."
+                )
+
+            out = out + step
 
         return out
 
@@ -775,12 +954,90 @@ class RayOpticalSystem:
         surfaces = []
 
         for element in self.elements:
-                surfaces.extend(element.surfaces)
+            surfaces.extend(element.surfaces)
+
         return surfaces
 
-    def plot_xz(self, ax, unit="mm"):
-        for surface in self.surfaces:
-            plot_surface_xz(surface, ax, unit=unit)
+    def plot_xz(
+        self,
+        ax,
+        unit: str = "mm",
+        **surface_kwargs,
+    ):
+        """
+        Plot all elements in the system.
+        """
+        
+        for e in self.elements:
+            e.plot_to_axes_xz(ax, unit = unit)
 
         return ax
 
+    def trace_and_plot_xz(
+        self,
+        rays: RayBundle,
+        ax,
+        unit: str = "mm",
+        max_rays: int | None = 50,
+        wavelength_index: int | None = None,
+        wavelength: float | None = None,
+        surface_kwargs=None,
+        ray_kwargs=None,
+    ) -> RayTraceResult:
+        """
+        Convenience method:
+            1. trace rays
+            2. plot system surfaces
+            3. plot ray history
+            4. return RayTraceResult
+        """
+        if surface_kwargs is None:
+            surface_kwargs = {}
+
+        if ray_kwargs is None:
+            ray_kwargs = {}
+
+        result = self.trace(rays)
+
+        self.plot_xz(ax, unit=unit, **surface_kwargs)
+
+        plot_raybundle_history_xz(
+            result.history,
+            ax,
+            unit=unit,
+            max_rays=max_rays,
+            wavelength_index=wavelength_index,
+            wavelength=wavelength,
+            **ray_kwargs,
+        )
+
+        return result
+
+    def __len__(self):
+        return len(self.elements)
+
+    def __iter__(self):
+        return iter(self.elements)
+
+    def __getitem__(self, item):
+        return self.elements[item]
+
+    def __add__(self, other):
+        if isinstance(other, RayOpticalSystem):
+            return RayOpticalSystem(
+                self.elements + other.elements,
+                name=f"{self.name}+{other.name}",
+            )
+
+        return RayOpticalSystem(
+            self.elements + [other],
+            name=self.name,
+        )
+
+    def __iadd__(self, other):
+        if isinstance(other, RayOpticalSystem):
+            self.extend(other.elements)
+        else:
+            self.append(other)
+
+        return self

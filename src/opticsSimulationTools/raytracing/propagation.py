@@ -1,5 +1,4 @@
-from .backend.core import RayBundle
-from .backend.surfaces import Surface
+from ..core.core_classes import RayBundle, Surface
 import numpy as np
 
 def propagate_to_surface(rays: RayBundle, surface: Surface):

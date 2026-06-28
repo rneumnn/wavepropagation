@@ -1,5 +1,6 @@
 import numpy as np
-
+from ...core.vizualizing import wavelength_to_rgb, wavelength_to_falsecolor, scale_map
+from matplotlib import colormaps
 
 def plot_surface_xz(
     surface,
@@ -45,12 +46,6 @@ def plot_surface_xz(
     line:
         Matplotlib line object.
     """
-    scale_map = {
-        "m": 1.0,
-        "mm": 1e3,
-        "um": 1e6,
-        "µm": 1e6,
-    }
 
     if unit not in scale_map:
         raise ValueError(f"Unsupported unit: {unit}")
@@ -128,15 +123,13 @@ def plot_raybundle_history_xz(
     If neither wavelength_index nor wavelength is given, wavelength_index=0 is used
     for spectral bundles.
     """
+    if unit not in scale_map:
+        raise ValueError(f"Unsupported unit: {unit}")
+
+    scale = scale_map[unit]
+
     if len(history) == 0:
         raise ValueError("history is empty.")
-
-    scale_map = {
-        "m": 1.0,
-        "mm": 1e3,
-        "um": 1e6,
-        "µm": 1e6,
-    }
 
     if unit not in scale_map:
         raise ValueError(f"Unsupported unit: {unit}")
@@ -255,19 +248,44 @@ def plot_raybundle_history_xz(
 
     return ax
 
+def pick_color(wavelength, wavelengths, color_style):
+        if color_style == "rgb":
+            color = wavelength_to_rgb(wavelength)
+        elif color_style in colormaps.keys():
+            print([k for k in colormaps.keys()])
+            color = wavelength_to_falsecolor(
+                wavelength,
+                wavelengths.min(),
+                wavelengths.max(),
+                cmap = color_style
+            )
+        else:
+            color = wavelength_to_falsecolor(
+                wavelength,
+                wavelengths.min(),
+                wavelengths.max()
+            )
+        return color
+
 def plot_raybundle_history_xz_by_wavelength(
     history,
     ax,
     wavelength_indices=None,
-    wavelengths=None,
+    wavelengths:np.ndarray = None,
     unit: str = "mm",
     max_rays: int | None = None,
+    color_style = "rgb",
     alpha: float = 0.7,
     linewidth: float = 0.8,
 ):
     """
     Plot several wavelengths from a spectral RayBundle history.
+    
+    Prameters
+    ---
+    color_style: str - "rgb" for wavelength to rgb convertion or a matplotlib colormap string for false color mapping
     """
+    
     if wavelengths is not None:
         available = np.asarray(history[0].wavelength, dtype=float).reshape(-1)
         wavelength_indices = [
@@ -292,7 +310,179 @@ def plot_raybundle_history_xz_by_wavelength(
             alpha=alpha,
             linewidth=linewidth,
             label=f"{wl * 1e9:.1f} nm",
+            color=pick_color(wl, wavelengths=wavelengths,color_style=color_style)
         )
 
     ax.legend()
     return ax
+
+def plot_lens_outline_xz(
+    surface1,
+    surface2,
+    ax,
+    xlim=None,
+    n_points: int = 1000,
+    unit: str = "mm",
+    fill: bool = False,
+    fill_alpha = .2,
+    fill_color = "cyan",
+    **kwargs,
+):
+    scale = scale_map[unit]
+
+    if xlim is None:
+        a1 = getattr(surface1, "aperture_radius", None)
+        a2 = getattr(surface2, "aperture_radius", None)
+
+        if a1 is None or a2 is None:
+            raise ValueError("xlim must be given if surfaces have no aperture_radius.")
+
+        aperture = min(a1, a2)
+        xlim = (-aperture, aperture)
+
+    x = np.linspace(xlim[0], xlim[1], n_points)
+
+    z1 = surface1.center_position[2] + surface1.z(
+        x - surface1.center_position[0],
+        np.zeros_like(x),
+    )
+    z2 = surface2.center_position[2] + surface2.z(
+        x - surface2.center_position[0],
+        np.zeros_like(x),
+    )
+
+    x_global = x+surface1.center_position[0]
+
+    valid = np.isfinite(z1) & np.isfinite(z2)
+
+    z1 = z1[valid]
+    z2 = z2[valid]
+    x_global = x_global[valid]
+
+    # Closed contour:
+    # surface1 from bottom to top,
+    # surface2 from top back to bottom.
+    z_poly = np.concatenate([z1, z2[::-1], z1[:1]])
+    x_poly = np.concatenate([x_global, x_global[::-1], x_global[:1]])
+
+    if fill:
+        artist = ax.fill(
+            z_poly * scale,
+            x_poly * scale,
+            alpha = fill_alpha,
+            color = fill_color,
+        )
+    artist = ax.plot(
+        z_poly * scale,
+        x_poly * scale,
+        **kwargs,
+    )
+
+    ax.set_xlabel(f"z [{unit}]")
+    ax.set_ylabel(f"x [{unit}]")
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(True)
+
+    return artist
+
+def connect_surface_line_ends(line1, line2, ax=None, **kwargs):
+    """
+    Connect upper and lower ends of two already plotted surface lines.
+
+    Assumes:
+        line x-data = z coordinate
+        line y-data = transverse x coordinate
+    """
+    if ax is None:
+        ax = line1.axes
+
+    z1 = np.asarray(line1.get_xdata(), dtype=float)
+    x1 = np.asarray(line1.get_ydata(), dtype=float)
+
+    z2 = np.asarray(line2.get_xdata(), dtype=float)
+    x2 = np.asarray(line2.get_ydata(), dtype=float)
+
+    i1_top = int(np.argmax(x1))
+    i2_top = int(np.argmax(x2))
+
+    i1_bot = int(np.argmin(x1))
+    i2_bot = int(np.argmin(x2))
+
+    top_line = ax.plot(
+        [z1[i1_top], z2[i2_top]],
+        [x1[i1_top], x2[i2_top]],
+        **kwargs,
+    )[0]
+
+    bottom_line = ax.plot(
+        [z1[i1_bot], z2[i2_bot]],
+        [x1[i1_bot], x2[i2_bot]],
+        **kwargs,
+    )[0]
+
+    return [top_line, bottom_line]
+
+def plot_prism_outline_xz(
+    prism,
+    ax,
+    n_points: int = 1000,
+    unit: str = "mm",
+    fill: bool = False,
+    fill_alpha = .2,
+    fill_color = "cyan",
+    **kwargs,
+):
+    scale = scale_map[unit]
+
+
+    
+    x = prism.stop_aperture_x
+    if prism.orientation == -1:
+        xlim = (x, prism.aperture_radius)
+    else:
+        xlim = (-prism.aperture_radius, x)
+
+    x = np.linspace(xlim[0], xlim[1], n_points)
+
+    z1 = prism.surfaces[0].center_position[2] + prism.surfaces[0].z(
+        x - prism.surfaces[0].center_position[0],
+        np.zeros_like(x),
+    )
+    z2 = prism.surfaces[1].center_position[2] + prism.surfaces[1].z(
+        x - prism.surfaces[1].center_position[0],
+        np.zeros_like(x),
+    )
+
+    x_global = x
+
+    valid = np.isfinite(z1) & np.isfinite(z2)
+
+    z1 = z1[valid]
+    z2 = z2[valid]
+    x_global = x_global[valid]
+
+    # Closed contour:
+    # surface1 from bottom to top,
+    # surface2 from top back to bottom.
+    z_poly = np.concatenate([z1, z2[::-1], z1[:1]])
+    x_poly = np.concatenate([x_global, x_global[::-1], x_global[:1]])
+
+    if fill:
+        artist = ax.fill(
+            z_poly * scale,
+            x_poly * scale,
+            alpha = fill_alpha,
+            color = fill_color,
+        )
+    artist = ax.plot(
+        z_poly * scale,
+        x_poly * scale,
+        **kwargs,
+    )
+
+    ax.set_xlabel(f"z [{unit}]")
+    ax.set_ylabel(f"x [{unit}]")
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(True)
+
+    return artist

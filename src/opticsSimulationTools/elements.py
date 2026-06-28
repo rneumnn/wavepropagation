@@ -2,122 +2,15 @@ from .wavepropagation.field import Field, RadialField, FieldBase
 import numpy as np
 from scipy.constants import c, pi
 from .core.materials.materialCore import RefractiveIndexFunction
-from .raytracing.backend.core import RayBundle, Surface, RayTraceResult
+from .core.materials.materials import AIR
+from .core.core_classes import RayBundle, RayTraceResult, element_base
 from .raytracing.backend.calculations import refract_rays, reflect_through, reflect
 from .raytracing.propagation import propagate_to_surface
-from .raytracing.backend.surfaces import SphericalSagSurface, PlaneSurface
-from .raytracing.backend.geometry import orient_normal_against_ray
+from .raytracing.backend.surfaces import SphericalSagSurface, PlaneSurface, check_surface_separation
+from .raytracing.backend.geometry import orient_normal_against_ray, normalize, intersect_planes
+from .raytracing.backend.visualization import plot_lens_outline_xz, plot_prism_outline_xz
+from matplotlib.axes import Axes
 
-class element_base:
-    """
-    Base class for optical elements. Subclasses should implement the apply method.
-    """
-    debug = True
-    n_element = 0
-    def __init__(self, radial_symmetric=False, center_position:np.ndarray[float]|None = None, surfaces:tuple[Surface]|None = None):
-        self.name = "BaseElement"
-        self.description = "Base class for optical elements. Subclasses should implement the apply method."
-        self.radial_symmetric = radial_symmetric
-        self.surfaces = surfaces    #enables raytracing for element
-        self.center_position = center_position    #enables raytracing for element
-        element_base.n_element += 1
-        self._make_dummy_surface()
-        self._update_properties()
-        return
-    
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-
-        if "apply" in cls.__dict__:
-            raise TypeError(
-                f"{cls.__name__} must not override apply(). "
-                "Override _apply_for_wavepropagation() instead."
-            )
-
-        cls.n_element = 0
-    
-    def _update_properties(self):
-        self.__class__.n_element += 1
-        self.name = f"{self.__class__.__name__}_{self.__class__.n_element}"
-    
-    def _radial_symmetric_check(self, field:Field|RadialField):
-        if not self.radial_symmetric and isinstance(field, RadialField):
-            raise ValueError(f"{self.name} is not a radial symmetric element and cannot be applied to RadialField instances.")
-        
-    def _make_dummy_surface(self):
-        """makes a flat dummy surface for the element"""
-        if (self.surfaces is None) and (self.center_position is not None):
-            self.surfaces = (PlaneSurface(self.center_position, normal=np.array((0,0,-1))))
-        
-    @property
-    def _raytracing_available(self):
-        if (self.surfaces is None) | (self.center_position is None):
-            return False
-        return True
-
-    def apply(self, input: FieldBase | RayBundle) -> FieldBase | RayTraceResult:
-        """
-        Public method. Do not override this in subclasses.
-
-        Standard element logic goes here.
-        """
-        if isinstance(input, FieldBase):
-            self._radial_symmetric_check(input)
-            if self.debug:
-                print(f"Applying {self.name}")
-            out = self._apply_for_wavepropagation(input)
-            out.last_element = self
-
-        elif isinstance(input, RayBundle):
-            if self.debug:
-                print(f"Applying {self.name}")
-            if not self._raytracing_available:
-                raise NotImplementedError(f"{type(self)} is not available for raytracing. Surfaces and Position for the element must be defined! {self.surfaces}, {self.position}")
-            out = self._apply_for_raytracing(input)
-
-        else:
-            raise TypeError(
-                f"{self.name} cannot be applied to input of type {type(input).__name__}."
-            )
-
-        return out
-
-    def _apply_for_wavepropagation(self, field: Field | RadialField) -> Field | RadialField:
-        """
-        Subclasses must implement this instead of apply().
-        """
-        raise NotImplementedError(
-            f"{self.__class__.__name__} must implement _apply_for_wavepropagation() to be able to be used for wavepropagation, not apply()."
-        )
-    
-    def _apply_for_raytracing(self, rays: RayBundle)-> RayTraceResult:
-        """
-        Subclasses must implement this instead of apply().
-        """
-        raise NotImplementedError(
-            f"{self.__class__.__name__} must implement _apply_for_raytracing() to be able to be used for raytracing, not apply()."
-        )
-    
-    @classmethod
-    def reset_element_counter(cls):
-        cls.n_element = 0
-
-    @classmethod
-    def all_subclasses(cls)->list[element_base]:
-        subclasses = []
-
-        for subclass in cls.__subclasses__():
-            subclasses.append(subclass)
-            subclasses.extend(subclass.all_subclasses())
-
-        return subclasses
-    
-    @classmethod
-    def reset_all_element_counters(cls):
-        for element_class in cls.all_subclasses():
-            element_class.reset_element_counter()
-
-    
 #Lenses
     
 class ThinLens(element_base):
@@ -392,7 +285,8 @@ class ThickRealLens(element_base):
         n_environment=None,
         aperture: float = 1e-2,
         n_slices: int = 64,
-        hankel_backend=None
+        hankel_backend=None,
+        min_seperation=0.2e-3
     ):
         """
         Parameters
@@ -453,6 +347,13 @@ class ThickRealLens(element_base):
                                  R = self.R2, 
                                  aperture_radius=self.aperture)
         self.surfaces=(self.S1,self.S2)
+
+        seperation = check_surface_separation(self.S1,
+                                              self.S2,
+                                              self.aperture,
+                                              min_separation=min_seperation)
+        if not seperation.valid:
+            raise ValueError(f"{self.name} is not physically valid with those parameters. The surface sepreration is not vaild.\n Minimum seperation {min_seperation} is reached at {seperation.r_crit} not at given aperture {aperture}! Increase material thickness or check radii.")
 
     def _n_value(self, n, wavelength: float) -> float:
         if callable(n):
@@ -760,14 +661,56 @@ class ThickRealLens(element_base):
         rays_at_s2 = propagate_to_surface(refracted_rays1, self.S2)
         normals = orient_normal_against_ray(rays_at_s2.directions, self.S2.normal_at_points(rays_at_s2.positions))
         refracted_rays2 = refract_rays(rays_at_s2, normals, self.n_environment)
-
+        refracted_rays2 = self._apply_aperture(refracted_rays2)
         result = RayTraceResult(
             rays=refracted_rays2,
             history=[rays_at_s1,refracted_rays1,rays_at_s2,refracted_rays2],
             elements=[self]
         )
         return result
+    
+    def aperture_mask(self, rays: RayBundle) -> np.ndarray:
+        """
+        Aperture and finite-prism check at current ray positions.
+
+        The ray positions are assumed to lie on one of the prism surfaces.
+        """
+        def thickness(x,y):
+            return self.S1.z(x,y)-self.S2.z(x,y)
+        local = rays.positions - self.center_position
+
+        x = local[..., 0]
+        y = local[..., 1]
+
+        mask = np.ones(rays.shape, dtype=bool)
+
+        if self.aperture is not None:
+            mask &= x**2 + y**2 <= self.aperture**2
+
+        # if np.sign(self.stop_aperture_y) == -1:
+        #     mask &= y>self.stop_aperture_y
+        # else:
+        #     mask &= y<self.stop_aperture_y
+
+        # Check that the projected x-position is still inside a physical
+        # region where S2 lies behind S1.
+        t = thickness(rays.positions[..., 0],rays.positions[..., 1])
+        mask &= np.isfinite(t)
+        mask &= t >= -1e-15
+
+        return mask
+    
+    def _apply_aperture(self, rays: RayBundle) -> RayBundle:
+        out = rays.copy()
+        out.valid &= self.aperture_mask(out)
+        return out
         
+    def plot_to_axes_xz(self, ax:Axes, color = "black", unit = "mm", fill = True, **kwargs):
+
+        plot_lens_outline_xz(self.S1, self.S2, ax, fill=fill, unit = unit, color = color, **kwargs)
+
+        
+
 
     def plot_geometry(self, field: FieldBase):
         """
@@ -1166,3 +1109,339 @@ class PulseFrontModulation(element_base):
             out.spectral_phase_x += phase
             out.spectral_phase_y += phase
             return out
+
+
+class Prism(element_base):
+    """
+    Raytracing prism element built from two finite PlaneSurface objects.
+
+    Coordinate convention
+    ---------------------
+    - optical axis: z
+    - wedge direction: x-z plane
+    - invariant direction: y
+
+    Geometry
+    --------
+    The prism is defined by two tilted planes:
+
+        S1: entrance surface
+        S2: exit surface
+
+    The two planes intersect in the apex line.
+
+    Parameters
+    ----------
+    surface1_angle:
+        Prism surface1 normal angles in degrees measured from z axis.
+
+    surface2_angle:
+        Prism surface2 normal angles in degrees.
+
+    center_thickness:
+        Distance between both surfaces at x = 0, measured along z.
+
+    material:
+        Refractive index function inside the prism.
+
+    center_position:
+        Prism center position.
+
+    aperture_radius:
+        Optional circular projected aperture.
+
+    x_half_width:
+        Optional rectangular half-width in x.
+
+    y_half_width:
+        Optional rectangular half-width in y.
+
+    n_environment:
+        Refractive index function outside prism.
+
+    orientation:
+        +1 or -1. Flips wedge direction.
+    """
+
+    def __init__(
+        self,
+        surface1_angles: tuple[float],
+        surface2_angles: tuple[float],
+        center_thickness: float,
+        material,
+        center_position=None,
+        aperture_radius: float | None = None,
+        x_half_width: float | None = None,
+        y_half_width: float | None = None,
+        n_environment=AIR.n_function,
+        orientation: float = 1.0,
+        #check_geometry: bool = True,
+    ):
+        super().__init__(radial_symmetric=False)
+
+        if center_position is None:
+            center_position = np.zeros(3, dtype=float)
+
+        self.center_thickness = float(center_thickness)
+        self.material = material
+        self.center_position = np.asarray(center_position, dtype=float)
+        print(self.center_position)
+
+        self.aperture_radius = aperture_radius
+        self.x_half_width = x_half_width
+        self.y_half_width = y_half_width
+
+        self.n_environment = n_environment
+        self.orientation = float(np.sign(orientation))
+        if self.orientation == 0:
+            self.orientation = 1.0
+        self.stop_aperture_y = self.aperture_radius
+        self.stop_aperture_x = self.aperture_radius
+
+
+        # Surface equations in local coordinates:
+        #
+        # S1:
+        #     z = -t/2 - m*x
+        #
+        # S2:
+        #     z = +t/2 + m*x
+        #
+        # For a plane z = a*x + b, a normal is:
+        #     n = [-a, 0, 1]
+        #
+        # Therefore:
+        #     S1 slope a1 = -m -> n1 = [+m, 0, 1]
+        #     S2 slope a2 = +m -> n2 = [-m, 0, 1]
+
+        p1 = self.center_position + np.array(
+            [0.0, 0.0, -0.5 * self.center_thickness],
+            dtype=float,
+        )
+
+        p2 = self.center_position + np.array(
+            [0.0, 0.0, +0.5 * self.center_thickness],
+            dtype=float,
+        )
+
+        self.S1 = PlaneSurface.from_normal_angles_deg(*surface1_angles, p1, aperture_radius = self.aperture_radius+np.linalg.norm(self.center_position[[0,1]]))
+        self.S2 = PlaneSurface.from_normal_angles_deg(*surface2_angles, p2, aperture_radius=self.aperture_radius+np.linalg.norm(self.center_position[[0,1]]))
+
+        # Required by your RayOpticalSystem convention.
+        self.surfaces = [self.S1, self.S2]
+        for s in self.surfaces:
+            print(s.center_position)
+
+        # Geometric backend: apex edge of the two prism planes.
+        try:
+            self.apex_line = intersect_planes(self.S1.plane, self.S2.plane)
+        except ValueError:
+            print("prism is parallel")
+            self.apex_line = None
+        self._check_geometry()
+
+        # if check_geometry:
+        #     self.check_geometry(raise_on_invalid=True)
+
+    @classmethod
+    def from_apex_angle(
+        cls,
+        apex_angle_deg: float,
+        center_thickness: float,
+        material,
+        s1_center_position=None,
+        s1_angle_to_z: float=None,
+        aperture_radius: float | None = None,
+        x_half_width: float | None = None,
+        y_half_width: float | None = None,
+        n_environment=AIR.n_function,
+        orientation: float = 1.0,
+    ):
+        """
+        Build a prism from an apex angle and a central normal angle.
+
+        Parameters
+        ----------
+        apex_angle_deg:
+            Angle between the two prism surfaces in degrees.
+
+        center_thickness:
+            Distance between both surfaces at x = 0, measured along z.
+
+        s1_angle_to_z:
+            angle of Surface one to z axis
+
+        material:
+            Refractive index function inside the prism.
+
+        orientation:
+            +1 or -1. Flips which surface normal is tilted toward +x.
+
+        Notes
+        -----
+        This constructor assumes the prism wedge lies in the x-z plane.
+        Therefore theta = 0 for both surface normals.
+        """
+        center_position = s1_center_position+np.asarray((0,0,center_thickness/2))
+        orientation = float(np.sign(orientation))
+        if orientation == 0:
+            orientation = 1.0
+
+        half_apex = 0.5 * float(apex_angle_deg)
+        if s1_angle_to_z is None:
+            s1_angle_to_z = 90-half_apex
+
+        surface1_angles = (
+            s1_angle_to_z+90,
+            0.0,
+        )
+
+        surface2_angles = (
+            -(180-s1_angle_to_z-90-apex_angle_deg),
+            0.0,
+        )
+
+        return cls(
+            surface1_angles=surface1_angles,
+            surface2_angles=surface2_angles,
+            center_thickness=center_thickness,
+            material=material,
+            center_position=center_position,
+            aperture_radius=aperture_radius,
+            x_half_width=x_half_width,
+            y_half_width=y_half_width,
+            n_environment=n_environment,
+            orientation=orientation,
+        )
+    
+    def _check_geometry(self):
+        #calculate apex aperture
+        if self.apex_line is not None:
+            p = self.apex_line.closest_point(self.center_position)
+            self.stop_aperture_y = p[1]
+            self.stop_aperture_x = p[0]
+            self.orientation = self.orientation*np.sign(self.stop_aperture_x)
+
+            
+
+
+    def thickness_at_x(self, x):
+        """
+        Projected z-thickness between S1 and S2 at global x.
+
+        Returns
+        -------
+        thickness:
+            z2(x) - z1(x)
+        """
+        x = np.asarray(x, dtype=float)
+        y = np.zeros_like(x)
+
+        z1 = self.S1.center_position[2] + self.S1.z(
+            x - self.S1.center_position[0],
+            y,
+        )
+
+        z2 = self.S2.center_position[2] + self.S2.z(
+            x - self.S2.center_position[0],
+            y,
+        )
+
+        return z2 - z1
+
+    def aperture_mask(self, rays: RayBundle) -> np.ndarray:
+        """
+        Aperture and finite-prism check at current ray positions.
+
+        The ray positions are assumed to lie on one of the prism surfaces.
+        """
+        local = rays.positions# - self.center_position
+
+        x = local[..., 0]
+        y = local[..., 1]
+
+        mask = np.ones(rays.shape, dtype=bool)
+
+        if self.x_half_width is not None:
+            mask &= np.abs(x) <= self.x_half_width
+
+        if self.y_half_width is not None:
+            mask &= np.abs(y) <= self.y_half_width
+
+        if self.aperture_radius is not None:
+            mask &= x**2 + y**2 <= self.aperture_radius**2
+
+        # if np.sign(self.stop_aperture_y) == -1:
+        #     mask &= y>self.stop_aperture_y
+        # else:
+        #     mask &= y<self.stop_aperture_y
+
+        # Check that the projected x-position is still inside a physical
+        # region where S2 lies behind S1.
+        thickness = self.thickness_at_x(rays.positions[..., 0])
+        mask &= np.isfinite(thickness)
+        mask &= thickness >= -1e-15
+
+        return mask
+    
+    def _apply_aperture(self, rays: RayBundle) -> RayBundle:
+        out = rays.copy()
+        out.valid &= self.aperture_mask(out)
+        return out
+    
+    def _apply_for_raytracing(self, rays: RayBundle) -> RayTraceResult:
+        """
+        Trace rays through the prism.
+
+        Sequence:
+            1. propagate to S1
+            2. aperture check at S1
+            3. refract environment -> prism material
+            4. propagate to S2 inside prism
+            5. aperture check at S2
+            6. refract prism material -> environment
+        """
+        history = [rays.copy()]
+
+        # 1. Propagate to first prism surface.
+        out = propagate_to_surface(rays, self.S1)
+        out = self._apply_aperture(out)
+        history.append(out.copy())
+
+        # 2. Refract into prism material.
+        normals = self.S1.normal_at_points(out.positions)
+        normals = orient_normal_against_ray(out.directions, normals)
+
+        out = refract_rays(
+            rays=out,
+            normal=normals,
+            n2=self.material,
+        )
+        history.append(out.copy())
+
+        # 3. Propagate inside prism to second prism surface.
+        out = propagate_to_surface(out, self.S2)
+        out = self._apply_aperture(out)
+        history.append(out.copy())
+
+        # 4. Refract back into environment.
+        normals = self.S2.normal_at_points(out.positions)
+        normals = orient_normal_against_ray(out.directions, normals)
+
+        out = refract_rays(
+            rays=out,
+            normal=normals,
+            n2=self.n_environment,
+        )
+        history.append(out.copy())
+
+        return RayTraceResult(
+            rays=out.copy(),
+            history=history,
+            elements=[self],
+        )
+
+    def plot_to_axes_xz(self, ax, **kwargs):
+        plot_prism_outline_xz(
+            self, ax,fill = True, color = "black", **kwargs
+        )

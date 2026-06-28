@@ -1,5 +1,5 @@
 from opticsSimulationTools.raytracing.backend.surfaces import SphericalSagSurface, spherical_sag
-from opticsSimulationTools.raytracing.backend.core import RayBundle, RayTraceResult
+from opticsSimulationTools.core.core_classes import RayBundle, RayTraceResult
 from opticsSimulationTools.elements import ThickRealLens
 from opticsSimulationTools.core.materials.materials import FUSED_SILICA, AIR
 from opticsSimulationTools.raytracing.backend.visualization import plot_surface_xz, plot_raybundle_history_xz
@@ -18,7 +18,7 @@ surface = SphericalSagSurface(
 rays = RayBundle(
     positions=np.array([[x, 0.0, -0.1] for x in np.linspace(-rmax, rmax, n)]),
     directions=np.array([[0.0, 0.0, 1.0]]*n),
-    wavelength=800e-9,
+    wavelength=[800e-9],
     opl=np.zeros(n),
     phase=np.zeros(n),
     valid=np.ones(n, dtype=bool),
@@ -26,7 +26,7 @@ rays = RayBundle(
 
 
 lens = ThickRealLens(200e-3, -200e-3, 5e-3, FUSED_SILICA.n_function, np.asarray((0,0,40e-3)), n_environment=AIR.n_function, aperture=3e-2)
-lens2 = ThickRealLens(-100e-3,100e-3, 3e-3,FUSED_SILICA.n_function, np.asarray((0,0,100e-3)), n_environment=AIR.n_function, aperture=3e-2)
+lens2 = ThickRealLens(-100e-3,100e-3, 3e-3,FUSED_SILICA.n_function, np.asarray((0,0,100e-3)), n_environment=AIR.n_function, aperture=2.8e-2)
 
 start = RayTraceResult(rays,[rays],[None])
 res_lens1 = start+lens.apply(rays)

@@ -1,6 +1,6 @@
 import numpy as np
 from .geometry import normalize
-from. core import RayBundle
+from ...core.core_classes import RayBundle
 from ...core.materials.materialCore import RefractiveIndexFunction
 
 

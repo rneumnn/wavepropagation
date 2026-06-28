@@ -1,25 +1,65 @@
 import numpy as np
-from .geometry import normalize
-from .core import RayBundle, Surface
+from .geometry import normalize, Plane, vector_from_angles
+from ...core.core_classes import RayBundle, Surface
 
 class PlaneSurface(Surface):
-    def __init__(self, center_position=None, normal=None):
-        super().__init__(center_position=center_position, surface_function=None)
+    def __init__(self, center_position=None, normal=None, **kwargs):
+        super().__init__(center_position=center_position, surface_function=None, **kwargs)
 
         if normal is None:
             normal = np.array([0.0, 0.0, 1.0])
 
         self.normal = normalize(np.asarray(normal, dtype=float))
 
-    def normal_at_points(self, points:np.ndarray[tuple[float]]):
+    @property
+    def plane(self) -> Plane:
+        return Plane(
+            position=self.center_position,
+            normal=self.normal,
+        )
+
+    def z(self, x, y):
+        """
+        Local height representation of the plane.
+
+        Local plane equation:
+
+            n_x x + n_y y + n_z z = 0
+
+        Therefore:
+
+            z = -(n_x x + n_y y) / n_z
+
+        This is only valid if the plane is not vertical with respect
+        to the local z-axis.
+        """
+        nx, ny, nz = self.normal
+
+        if abs(nz) < 1e-15:
+            raise ValueError(
+                f"{self.name}: plane cannot be represented as z(x, y), "
+                "because normal_z is too small."
+            )
+
+        return -(nx * x + ny * y) / nz
+
+    def normal_at_points(self, points: np.ndarray):
         return np.broadcast_to(self.normal, points.shape)
 
     def intersect(self, rays: RayBundle, t_min=1e-12):
-        p0 = self.center_position
-        n = self.normal
+        """
+        Intersect RayBundle with this plane surface.
 
-        denom = np.sum(rays.directions * n, axis=-1)
-        numer = np.sum((p0 - rays.positions) * n, axis=-1)
+        Ray equation:
+            p(t) = p0 + t*u
+
+        Plane equation:
+            dot(n, p - plane.position) = 0
+        """
+        plane = self.plane
+
+        denom = np.sum(rays.directions * plane.normal, axis=-1)
+        numer = np.sum((plane.position - rays.positions) * plane.normal, axis=-1)
 
         denom_safe = np.where(np.abs(denom) > 1e-15, denom, np.nan)
         t = numer / denom_safe
@@ -27,6 +67,60 @@ class PlaneSurface(Surface):
         valid = rays.valid & np.isfinite(t) & (t > t_min)
 
         return t, valid
+    
+    @classmethod
+    def from_normal_angles(
+        cls,
+        phi: float,
+        theta: float,
+        center_position=None,
+        aperture_radius = None
+    ):
+        """
+        Create a PlaneSurface from normal-vector angles in radians.
+
+        phi:
+            Deflection of the normal from the y-z plane toward +x.
+
+        theta:
+            Angle of the normal inside the y-z plane,
+            measured from +z toward +y.
+        """
+        normal = vector_from_angles(phi, theta)
+
+        return cls(
+            center_position=center_position,
+            normal=normal,
+            aperture_radius = aperture_radius
+        )
+
+    @classmethod
+    def from_normal_angles_deg(
+        cls,
+        phi_deg: float,
+        theta_deg: float,
+        center_position=None,
+        aperture_radius = None
+    ):
+        """
+        Create a PlaneSurface from normal-vector angles in degrees.
+
+        phi_deg:
+            Deflection of the normal from the y-z plane toward +x.
+
+        theta_deg:
+            Angle of the normal inside the y-z plane,
+            measured from +z toward +y.
+        """
+        normal = vector_from_angles(phi_deg*np.pi/180, theta_deg*np.pi/180)
+
+        return cls(
+            center_position=center_position,
+            normal=normal,
+            aperture_radius=aperture_radius
+        )
+    
+
         
 def spherical_sag(R: float, r: np.ndarray) -> np.ndarray:
         """
@@ -147,8 +241,6 @@ class SphericalSagSurface(Surface):
         # Store optical radius of curvature.
         self.R = float(R)
 
-        # Optional aperture clipping.
-        self.aperture_radius = aperture_radius
 
         # Define the surface as a height function z = sag(x, y).
         #
@@ -161,6 +253,7 @@ class SphericalSagSurface(Surface):
         super().__init__(
             center_position=center_position,
             surface_function=sag_function,
+            aperture_radius=aperture_radius
         )
 
     def z_radial(self, r:np.ndarray[float]):
@@ -410,3 +503,144 @@ class SphericalSagSurface(Surface):
         best_t = np.where(best_valid, best_t, np.nan)
 
         return best_t, best_valid
+    
+
+from dataclasses import dataclass
+import numpy as np
+
+
+@dataclass
+class SurfaceSeparationCheck:
+    valid: bool
+    min_separation: float
+    max_separation: float
+    r_crit:float
+    r_at_min: float
+    phi_at_min: float
+    point_at_min: np.ndarray
+    separation: np.ndarray
+    valid_samples: np.ndarray
+
+
+def check_surface_separation(
+    surface1: Surface,
+    surface2: Surface,
+    aperture_radius: float,
+    n_r: int = 512,
+    n_phi: int = 64,
+    min_separation: float = 0.0,
+    include_center: bool = True,
+) -> SurfaceSeparationCheck:
+    """
+    Check whether two sag-like surfaces intersect inside a circular aperture.
+
+    Assumption
+    ----------
+    Both surfaces can be represented as global z(x, y) over the aperture.
+
+    The check evaluates
+
+        separation = z2_global(x, y) - z1_global(x, y)
+
+    and requires
+
+        separation >= min_separation
+
+    everywhere inside the sampled aperture.
+
+    Parameters
+    ----------
+    surface1, surface2:
+        Surface objects with z(x, y), center_position, and local optical axis
+        aligned with global z.
+
+    aperture_radius:
+        Circular aperture radius in meters.
+
+    n_r, n_phi:
+        Sampling resolution.
+
+    min_separation:
+        Minimum allowed distance along z between surface1 and surface2.
+
+    include_center:
+        Whether to include r=0.
+
+    Returns
+    -------
+    SurfaceSeparationCheck
+    """
+    if include_center:
+        r = np.linspace(0.0, aperture_radius, n_r)
+    else:
+        r = np.linspace(aperture_radius / n_r, aperture_radius, n_r)
+
+    phi = np.linspace(0.0, 2.0 * np.pi, n_phi, endpoint=False)
+
+    pp, rr = np.meshgrid(phi, r, indexing="ij")
+
+    x_global = rr * np.cos(pp)
+    y_global = rr * np.sin(pp)
+
+    # Convert global x/y to local x/y coordinates of each surface.
+    x1 = x_global - surface1.center_position[0]
+    y1 = y_global - surface1.center_position[1]
+
+    x2 = x_global - surface2.center_position[0]
+    y2 = y_global - surface2.center_position[1]
+
+    z1 = surface1.center_position[2] + surface1.z(x1, y1)
+    z2 = surface2.center_position[2] + surface2.z(x2, y2)
+
+    separation = z2 - z1
+
+    valid_samples = np.isfinite(separation)
+
+    if not np.any(valid_samples):
+        return SurfaceSeparationCheck(
+            valid=False,
+            min_separation=np.nan,
+            max_separation=np.nan,
+            r_at_min=np.nan,
+            phi_at_min=np.nan,
+            point_at_min=np.array([np.nan, np.nan, np.nan]),
+            separation=separation,
+            valid_samples=valid_samples,
+        )
+
+    sep_valid = np.where(valid_samples, separation, np.inf)
+
+
+    min_idx = np.unravel_index(np.argmin(sep_valid), sep_valid.shape)
+
+    min_sep = sep_valid[min_idx]
+    max_sep = np.nanmax(separation)
+
+    r_min = rr[min_idx]
+    phi_min = pp[min_idx]
+    too_small = rr[separation<=min_separation]
+    r_crit = aperture_radius
+    if np.size(too_small) > 0:
+        r_crit = np.min(too_small)
+    point_min = np.array(
+        [
+            x_global[min_idx],
+            y_global[min_idx],
+            z1[min_idx],
+        ],
+        dtype=float,
+    )
+
+    is_valid = bool(min_sep >= min_separation)
+
+    return SurfaceSeparationCheck(
+        valid=is_valid,
+        min_separation=float(min_sep),
+        max_separation=float(max_sep),
+        r_crit = float(r_crit),
+        r_at_min=float(r_min),
+        phi_at_min=float(phi_min),
+        point_at_min=point_min,
+        separation=separation,
+        valid_samples=valid_samples,
+    )
