@@ -292,6 +292,8 @@ def plot_raybundle_history_xz_by_wavelength(
             int(np.argmin(np.abs(available - wl)))
             for wl in wavelengths
         ]
+    else:
+        wavelengths = history[0].wavelength.reshape(-1)
 
     if wavelength_indices is None:
         available = np.asarray(history[0].wavelength, dtype=float).reshape(-1)

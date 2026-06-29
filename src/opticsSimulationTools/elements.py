@@ -40,6 +40,8 @@ class ThinLens(element_base):
         out.spectral_phase_y += phase
         return out
     
+    #for raytracing use abcd formalism
+    
 class IdealChromaticLens(ThinLens):
     """
     A lens with a wavelength-dependent focal length to model chromatic aberration. The focal length is defined by a simple dispersion relation, but can be modified to fit specific materials or designs.
@@ -326,12 +328,11 @@ class ThickRealLens(element_base):
         hankel_backend:
             Optional Hankel transform backend for radially symmetric fields.
         """
-        super().__init__(radial_symmetric=True)
+        super().__init__(radial_symmetric=True, n_environment=n_environment)
         self.R1 = R1
         self.R2 = R2
         self.center_thickness = center_thickness
         self.n = n
-        self.n_environment = n_environment
         self.aperture = aperture
         self.n_slices = int(n_slices)
         self.description = f"Thick lens model with curved surfaces, finite thickness, material dispersion, and surrounding medium. R1={R1} m, R2={R2} m, center thickness={center_thickness} m, relative aperture={aperture}, n={n}, n_environment={n_environment}, n_slices={n_slices}."
@@ -656,6 +657,7 @@ class ThickRealLens(element_base):
     def _apply_for_raytracing(self, rays:RayBundle):
         rays_at_s1 = propagate_to_surface(rays=rays,
                                      surface=self.S1)
+        rays_at_s1.last_element = self
         normals = orient_normal_against_ray(rays_at_s1.directions, self.S1.normal_at_points(rays_at_s1.positions))
         refracted_rays1 = refract_rays(rays_at_s1, normals, self.n)
         rays_at_s2 = propagate_to_surface(refracted_rays1, self.S2)
@@ -1406,6 +1408,7 @@ class Prism(element_base):
         # 1. Propagate to first prism surface.
         out = propagate_to_surface(rays, self.S1)
         out = self._apply_aperture(out)
+        out.last_element = self
         history.append(out.copy())
 
         # 2. Refract into prism material.
@@ -1417,11 +1420,13 @@ class Prism(element_base):
             normal=normals,
             n2=self.material,
         )
+        out.last_element=self
         history.append(out.copy())
 
         # 3. Propagate inside prism to second prism surface.
         out = propagate_to_surface(out, self.S2)
         out = self._apply_aperture(out)
+        out.last_element = self
         history.append(out.copy())
 
         # 4. Refract back into environment.
@@ -1433,6 +1438,7 @@ class Prism(element_base):
             normal=normals,
             n2=self.n_environment,
         )
+        out.last_element = self
         history.append(out.copy())
 
         return RayTraceResult(
@@ -1445,3 +1451,24 @@ class Prism(element_base):
         plot_prism_outline_xz(
             self, ax,fill = True, color = "black", **kwargs
         )
+
+class Screen(element_base):
+    """Simple class forrepresenting a observation screen. Define the screensurface by Surface class. Different constructormethods for simple screen planes"""
+    def __init__(self, radial_symmetric=False, center_position = None, surfaces = None):
+        super().__init__(radial_symmetric, center_position, surfaces)
+
+    def _apply_for_raytracing(self, rays):
+        out = propagate_to_surface(rays, self.surfaces[0])
+        out.last_element = self
+        history = [rays.copy(), out.copy()]
+        return RayTraceResult(
+            rays=out, history=history, elements = [self]
+        )
+    
+    def plot_to_axes_xz(self, ax, **kwargs):
+        return super().plot_to_axes_xz(ax, color = "blue", **kwargs)
+    
+    @classmethod
+    def FlatScreen(cls, center_position, normal = np.array((0,0,-1)), **kwargs):
+        S1 = PlaneSurface(center_position, normal=normal, **kwargs)
+        return cls(center_position=center_position, surfaces = [S1])

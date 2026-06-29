@@ -8,5 +8,6 @@ def propagate_to_surface(rays: RayBundle, surface: Surface):
     out = out.translate(t)
     out.positions[~valid] = rays.positions[~valid]
     out.valid &= valid
+    out.surface = surface
 
     return out

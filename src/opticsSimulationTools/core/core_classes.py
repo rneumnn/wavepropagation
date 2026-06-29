@@ -7,15 +7,16 @@ from .materials.materials import AIR
 from .spectralUtils import Spectrum
 from ..raytracing.backend.geometry import normalize, Plane, orient_normal_against_ray
 from scipy.constants import c
-from ..raytracing.backend.visualization import plot_surface_xz, plot_raybundle_history_xz
+from ..raytracing.backend.visualization import plot_surface_xz, plot_raybundle_history_xz, plot_raybundle_history_xz_by_wavelength
 
 class element_base:
     """
     Base class for optical elements. Subclasses should implement the apply method.
     """
+    N_ENVIRONMENT_STANDARD = AIR.n_function
     debug = True
     n_element = 0
-    def __init__(self, radial_symmetric=False, center_position:np.ndarray[float]|None = None, surfaces:tuple[Surface]|None = None):
+    def __init__(self, radial_symmetric=False, center_position:np.ndarray[float]|None = None, surfaces:tuple[Surface]|None = None, n_environment=None):
         self.name = "BaseElement"
         self.description = "Base class for optical elements. Subclasses should implement the apply method."
         self.radial_symmetric = radial_symmetric
@@ -23,6 +24,8 @@ class element_base:
         self.center_position = center_position    #enables raytracing for element
         element_base.n_element += 1
         self._update_properties()
+        if n_environment is None:
+            self.n_environment = element_base.N_ENVIRONMENT_STANDARD
         return
     
     def __init_subclass__(cls, **kwargs):
@@ -138,17 +141,20 @@ class RayBundle:
     positions: np.ndarray
     directions: np.ndarray
     wavelength: np.ndarray
+    weights: np.ndarray
     opl: np.ndarray
     phase: np.ndarray
     valid: np.ndarray
     n_medium: RefractiveIndexFunction = AIR.n_function
-    last_element = None
+    last_element: element_base = None
+    surface: Surface = None
 
     def __post_init__(self):
         if type(self.wavelength) == float: self.wavelength = [self.wavelength]
         self.positions = np.asarray(self.positions, dtype=float)
         self.directions = normalize(np.asarray(self.directions, dtype=float))
         self.wavelength = np.asarray(self.wavelength, dtype=float)
+        self.weights = np.asarray(self.weights, dtype=float)
         self.opl = np.asarray(self.opl, dtype=float)
         self.phase = np.asarray(self.phase, dtype=float)
         self.valid = np.asarray(self.valid, dtype=bool)
@@ -180,11 +186,14 @@ class RayBundle:
         return RayBundle(
             positions=self.positions.copy(),
             directions=self.directions.copy(),
-            wavelength=self.wavelength,
+            wavelength=self.wavelength.copy(),
+            weights = self.weights.copy(),
             opl=self.opl.copy(),
             phase=self.phase.copy(),
             valid=self.valid.copy(),
             n_medium=self.n_medium,
+            surface = self.surface,
+            last_element= self.last_element
         )
 
     @property
@@ -301,6 +310,7 @@ class RayBundle:
             positions=positions,
             directions=directions,
             wavelength=float(wavelength),
+            weights = 1.0,
             opl=np.zeros(shape, dtype=float),
             phase=np.zeros(shape, dtype=float),
             valid=np.ones(shape, dtype=bool),
@@ -340,6 +350,7 @@ class RayBundle:
         """
         x = np.asarray(x, dtype=float)
         wavelengths = np.asarray(spectrum.wavelengths, dtype=float)
+        weights = np.asarray(spectrum.weights_lambda)
 
         n_lam = wavelengths.size
         n_rays = x.size
@@ -359,6 +370,7 @@ class RayBundle:
             positions=positions,
             directions=directions,
             wavelength=wavelengths[:, None],
+            weights = weights,
             opl=np.zeros((n_lam, n_rays), dtype=float),
             phase=np.zeros((n_lam, n_rays), dtype=float),
             valid=np.ones((n_lam, n_rays), dtype=bool),
@@ -419,6 +431,7 @@ class RayBundle:
             positions=positions,
             directions=directions,
             wavelength=float(wavelength),
+            weights = 1,
             opl=np.zeros(n_rays, dtype=float),
             phase=np.zeros(n_rays, dtype=float),
             valid=np.ones(n_rays, dtype=bool),
@@ -453,6 +466,7 @@ class RayBundle:
         """
         radii = np.asarray(radii, dtype=float)
         wavelengths = np.asarray(spectrum.wavelengths, dtype=float)
+        weights = spectrum.weights_lambda
 
         phis = phi0 + np.linspace(
             0.0,
@@ -482,6 +496,7 @@ class RayBundle:
             positions=positions,
             directions=directions,
             wavelength=wavelengths[:, None],
+            weights = weights,
             opl=np.zeros((n_lambda, n_rays), dtype=float),
             phase=np.zeros((n_lambda, n_rays), dtype=float),
             valid=np.ones((n_lambda, n_rays), dtype=bool),
@@ -668,6 +683,14 @@ class RayTraceResult:
     @property
     def final_directions_flat(self) -> np.ndarray:
         return self.rays.directions.reshape(-1, 3)
+    
+    @property
+    def element_history(self):
+        return [h.last_element for h in self.history]
+    
+    @property
+    def surface_history(self):
+        return [h.surface for h in self.history]
 
     
     def ray_path(self, ray_index: int, flat: bool = True) -> np.ndarray:
@@ -979,9 +1002,10 @@ class RayOpticalSystem:
         ax,
         unit: str = "mm",
         max_rays: int | None = 50,
-        wavelength_index: int | None = None,
-        wavelength: float | None = None,
+        wavelength_indizes: np.ndarray[int] | None = None,
+        wavelengths: np.ndarray[float] | None = None,
         surface_kwargs=None,
+        color_style = "rgb",
         ray_kwargs=None,
     ) -> RayTraceResult:
         """
@@ -1001,13 +1025,14 @@ class RayOpticalSystem:
 
         self.plot_xz(ax, unit=unit, **surface_kwargs)
 
-        plot_raybundle_history_xz(
+        plot_raybundle_history_xz_by_wavelength(
             result.history,
             ax,
             unit=unit,
             max_rays=max_rays,
-            wavelength_index=wavelength_index,
-            wavelength=wavelength,
+            wavelength_indices=wavelength_indizes,
+            wavelengths=wavelengths,
+            color_style=color_style,
             **ray_kwargs,
         )
 
