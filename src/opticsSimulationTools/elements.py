@@ -678,7 +678,7 @@ class ThickRealLens(element_base):
         The ray positions are assumed to lie on one of the prism surfaces.
         """
         def thickness(x,y):
-            return self.S1.z(x,y)-self.S2.z(x,y)
+            return np.abs(self.S1.z(x,y)-(self.center_thickness+self.S2.z(x,y)))
         local = rays.positions - self.center_position
 
         x = local[..., 0]
