@@ -1,6 +1,6 @@
 from opticsSimulationTools.raytracing.backend.surfaces import SphericalSagSurface, spherical_sag
 from opticsSimulationTools.core.core_classes import RayBundle, RayTraceResult, RayOpticalSystem
-from opticsSimulationTools.elements import ThickRealLens, Prism, Screen
+from opticsSimulationTools.elements import ThickRealLens, Prism, Screen, PlaneMirror, SphericalMirror, Axiparabola
 from opticsSimulationTools.core.spectralUtils import gaussian_spectrum_omega
 from opticsSimulationTools.core.materials.materials import FUSED_SILICA, AIR, BK7
 from opticsSimulationTools.raytracing.backend.visualization import plot_surface_xz, plot_raybundle_history_xz, plot_raybundle_history_xz_by_wavelength
@@ -10,8 +10,8 @@ from matplotlib import pyplot as plt
 
 rmax = 5e-2
 central_wl = 800e-9
-n_rays = 10
-n_wl = 10
+n_rays = 1000
+n_wl = 3
 spec = gaussian_spectrum_omega(central_wl, 40e-9, n_wl)
 rays = RayBundle.collimated_line_spectral(
     x = np.linspace(-rmax,rmax,n_rays),
@@ -19,21 +19,34 @@ rays = RayBundle.collimated_line_spectral(
     spectrum=spec,
 )
 
-glass = ThickRealLens(
-    0e-3,0,
+glass = ThickRealLens.from_euler_deg(
+    300e-3,-200e-3,
     center_thickness=3e-2,
     center_position=(0,0,10e-2),
     aperture=1.5*rmax,
-    n=BK7.n_function
+    n=BK7.n_function,
+    ry_deg=0,
+    rx_deg=0
+)
+mirror = SphericalMirror.from_euler_deg(
+    R = -200e-3,
+    center_position=(0,0,20e-2),
+    aperture_radius=1.5*rmax,
+    ry_deg=0, phase_shift=np.pi,
+    unfold=True
 )
 
-screen = Screen.FlatScreen((0,0,100e-2), )#aperture_radius=rmax*2)
+axiparabola = Axiparabola.from_euler_deg(
+    200e-3, 3e-2, rmax, (0,0,70e-2), unfold=True
+)
 
-system = RayOpticalSystem([glass, screen])
+screen = Screen.FlatScreen((0,0,100e-2), aperture_radius=1)
+
+system = RayOpticalSystem([axiparabola, screen])
 
 fig, ax = plt.subplots()
 result = system.trace_and_plot_xz(
-    rays=rays, ax=ax, color_style="jet", #wavelengths=rays.wavelength
+    rays=rays, ax=ax, color_style="jet", wavelengths=rays.wavelength
 )
 plt.show()
 print(result.rays.wavelength)

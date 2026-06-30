@@ -138,9 +138,12 @@ def reflect_rays(
     rays: RayBundle,
     normal: np.ndarray,
     phase_shift: float = 0.0,
+    unfold: bool = False,
+    unfold_reference_z: float | None = None,
+    only_if_negative_z: bool = True,
 ) -> RayBundle:
     """
-    Convenience method for reflecting a RayBundle.
+    Reflect a RayBundle at a surface.
 
     Parameters
     ----------
@@ -148,25 +151,67 @@ def reflect_rays(
         RayBundle already located on the reflecting surface.
 
     normal:
-        Normal vectors at ray positions, shape rays.positions.shape.
+        Surface normal vectors at ray positions.
 
     phase_shift:
-        Optional constant phase shift added on reflection.
-        Use np.pi if you want to model a simple pi phase flip.
+        Optional constant phase shift on reflection.
+
+    unfold:
+        If False, perform physical reflection.
+
+        If True, perform physical reflection first and then unfold the reflected
+        rays into a forward-propagating +z coordinate representation.
+
+    unfold_reference_z:
+        Global z coordinate of the unfolding plane.
+
+        Usually mirror.surface.center_position[2].
+
+        Required if unfold=True.
+
+    only_if_negative_z:
+        If True, only rays with reflected direction_z < 0 are unfolded.
 
     Returns
     -------
     out:
         Reflected RayBundle.
+
+    Notes
+    -----
+    The unfolding changes coordinates only. It must not add optical path length.
+    The physical optical path up to the mirror has already been accumulated by
+    propagate_to_surface().
     """
     out = rays.copy()
 
     new_dirs, refl_valid = reflect(
-        rays.directions,
-        normal,
+        direction=rays.directions,
+        normal=normal,
     )
 
+    new_positions = rays.positions.copy()
+
+    if unfold:
+        if unfold_reference_z is None:
+            raise ValueError(
+                "unfold_reference_z must be given when unfold=True."
+            )
+
+        new_positions, new_dirs = unfold_reflected_rays_z(
+            positions=new_positions,
+            directions=new_dirs,
+            reference_z=unfold_reference_z,
+            only_if_negative_z=only_if_negative_z,
+        )
+
     valid = rays.valid & refl_valid
+
+    out.positions = np.where(
+        valid[..., None],
+        new_positions,
+        out.positions,
+    )
 
     out.directions = np.where(
         valid[..., None],
@@ -179,17 +224,139 @@ def reflect_rays(
     if phase_shift != 0.0:
         out.phase[valid] += phase_shift
 
-    # n_medium does not change for ideal reflection.
     out.n_medium = rays.n_medium
 
     return out
 
-# def reflect_through(direction, normal):
-#     """ 
-#     Simulates a reflecting element but mirrors the reflection vertically, so the ray continues in the same direction
-#     """
-    
-#     direction = normalize(direction)
-#     normal = normalize(normal)
+def reflect_unfolded(
+    direction: np.ndarray,
+    normal: np.ndarray,
+    keep_positive_z: bool = True,
+):
+    """
+    Specular reflection followed by an artificial unfolding step.
 
-#     angles_between = np.arccos(np.linalg.multi_dot(direction, normal))
+    This is useful for optical layouts where backward propagation is not yet
+    supported. The physical reflection is computed first. If the reflected ray
+    points toward negative global z, its z component is mirrored so that it
+    continues toward positive global z.
+
+    Parameters
+    ----------
+    direction:
+        Incoming ray directions, shape (..., 3).
+
+    normal:
+        Surface normals, shape (..., 3).
+
+    keep_positive_z:
+        If True, reflected rays with negative z direction are mirrored to
+        positive z direction.
+
+    Returns
+    -------
+    unfolded_direction:
+        Unit directions, shape (..., 3).
+
+    valid:
+        Boolean validity mask, shape (...).
+
+    Notes
+    -----
+    This is not a physical reflection in global coordinates. It is an unfolded
+    coordinate representation of the reflected beam path.
+
+    It should be used only for systems where later elements are also placed in
+    the unfolded forward-propagating coordinate system.
+    """
+    reflected_direction, valid = reflect(
+        direction=direction,
+        normal=normal,
+    )
+
+    if keep_positive_z:
+        flip = reflected_direction[..., 2] < 0.0
+
+        unfolded_direction = reflected_direction.copy()
+        unfolded_direction[..., 2] = np.where(
+            flip,
+            -unfolded_direction[..., 2],
+            unfolded_direction[..., 2],
+        )
+
+        unfolded_direction = normalize(unfolded_direction)
+
+        valid &= np.isfinite(unfolded_direction).all(axis=-1)
+
+        return unfolded_direction, valid
+
+    return reflected_direction, valid
+
+def unfold_reflected_rays_z(
+    positions: np.ndarray,
+    directions: np.ndarray,
+    reference_z: float,
+    only_if_negative_z: bool = True,
+):
+    """
+    Unfold reflected rays into a forward-propagating +z representation.
+
+    This is not a physical transformation of the laboratory geometry. It is a
+    coordinate unfolding used when backward propagation is not supported.
+
+    The transformation mirrors the ray position and direction at a global
+    z-reference plane:
+
+        z_position  -> 2*z_ref - z_position
+        z_direction -> -z_direction
+
+    Parameters
+    ----------
+    positions:
+        Ray positions after hitting the mirror, shape (..., 3).
+
+    directions:
+        Physically reflected ray directions, shape (..., 3).
+
+    reference_z:
+        Global z coordinate of the unfolding plane.
+
+        Usually this is the mirror center z position.
+
+    only_if_negative_z:
+        If True, only rays with direction_z < 0 are unfolded.
+
+    Returns
+    -------
+    unfolded_positions:
+        Coordinate-unfolded ray positions.
+
+    unfolded_directions:
+        Coordinate-unfolded ray directions.
+    """
+    positions = np.asarray(positions, dtype=float)
+    directions = normalize(directions)
+
+    unfolded_positions = positions.copy()
+    unfolded_directions = directions.copy()
+
+    if only_if_negative_z:
+        flip = unfolded_directions[..., 2] < 0.0
+    else:
+        flip = np.ones(directions.shape[:-1], dtype=bool)
+
+    unfolded_positions[..., 2] = np.where(
+        flip,
+        2.0 * reference_z - unfolded_positions[..., 2],
+        unfolded_positions[..., 2],
+    )
+
+    unfolded_directions[..., 2] = np.where(
+        flip,
+        -unfolded_directions[..., 2],
+        unfolded_directions[..., 2],
+    )
+
+    unfolded_directions = normalize(unfolded_directions)
+
+    return unfolded_positions, unfolded_directions

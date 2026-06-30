@@ -916,6 +916,28 @@ class Surface:
         y = np.full_like(x, y, dtype=float)
 
         return self.global_points_from_xy(x, y)
+    
+    def points_yz(self, y, x=0.0):
+        """
+        Evaluate global points on the local y-z meridional section.
+
+        Parameters
+        ----------
+        y:
+            Local y coordinates.
+
+        x:
+            Local x coordinate. Default is 0.
+
+        Returns
+        -------
+        points:
+            Global surface points, shape (..., 3).
+        """
+        y = np.asarray(y, dtype=float)
+        x = np.full_like(y, x, dtype=float)
+
+        return self.global_points_from_xy(x, y)
 
     def aperture_mask_local_xy(self, x, y):
         """

@@ -619,7 +619,7 @@ class SurfaceSeparationCheck:
     valid: bool
     min_separation: float
     max_separation: float
-    r_crit:float
+    r_crit: float
     r_at_min: float
     phi_at_min: float
     point_at_min: np.ndarray
@@ -647,7 +647,7 @@ def check_surface_separation(
 
     It is not valid for strongly rotated surfaces, vertical surfaces, or
     surfaces whose global projection is not single-valued in z.
-    
+
     Assumption
     ----------
     Both surfaces can be represented as global z(x, y) over the aperture.
@@ -759,3 +759,197 @@ def check_surface_separation(
         valid_samples=valid_samples,
     )
 
+
+def check_surface_separation_common_frame(
+    surface1: Surface,
+    surface2: Surface,
+    aperture_radius: float,
+    n_r: int = 512,
+    n_phi: int = 64,
+    min_separation: float = 0.0,
+    include_center: bool = True,
+) -> SurfaceSeparationCheck:
+    """
+    Check separation of two sag surfaces that share the same local orientation.
+
+    This is the correct check for a rotated thick lens where both surfaces are
+    part of one rigid element.
+
+    The function samples local x-y coordinates in the frame of surface1 and
+    evaluates the signed separation along the shared local z-axis.
+
+    Assumption
+    ----------
+    surface1 and surface2 have the same rotation matrix.
+
+    The surfaces may be globally rotated and translated, but they must be
+    representable as local sag functions in the same local x-y frame.
+
+    Returns
+    -------
+    SurfaceSeparationCheck
+        valid is True if separation >= min_separation for all valid samples.
+    """
+    if include_center:
+        r = np.linspace(0.0, aperture_radius, n_r)
+    else:
+        r = np.linspace(aperture_radius / n_r, aperture_radius, n_r)
+
+    phi = np.linspace(0.0, 2.0 * np.pi, n_phi, endpoint=False)
+
+    pp, rr = np.meshgrid(phi, r, indexing="ij")
+
+    x = rr * np.cos(pp)
+    y = rr * np.sin(pp)
+
+    # Points on surface1 in surface1-local coordinates.
+    z1 = surface1.z(x, y)
+    p1_local_s1 = np.stack([x, y, z1], axis=-1)
+
+    # Convert those x-y sample coordinates into global points on the reference
+    # local z=0 plane of surface1.
+    p_ref_local_s1 = np.stack([x, y, np.zeros_like(x)], axis=-1)
+    p_ref_global = surface1.local_to_global_points(p_ref_local_s1)
+
+    # Express the same reference points in surface2 local coordinates.
+    p_ref_local_s2 = surface2.global_to_local_points(p_ref_global)
+
+    x2 = p_ref_local_s2[..., 0]
+    y2 = p_ref_local_s2[..., 1]
+
+    z2_surface2_local = surface2.z(x2, y2)
+
+    # Surface2 point in global coordinates.
+    p2_local_s2 = np.stack([x2, y2, z2_surface2_local], axis=-1)
+    p2_global = surface2.local_to_global_points(p2_local_s2)
+
+    # Express both surface points in surface1 local frame.
+    p1_global = surface1.local_to_global_points(p1_local_s1)
+
+    p1_in_s1 = surface1.global_to_local_points(p1_global)
+    p2_in_s1 = surface1.global_to_local_points(p2_global)
+
+    # Separation along surface1 local z-axis.
+    separation = p2_in_s1[..., 2] - p1_in_s1[..., 2]
+
+    valid_samples = np.isfinite(separation) & np.isfinite(z1) & np.isfinite(z2_surface2_local)
+
+    if surface1.aperture_radius is not None:
+        valid_samples &= x**2 + y**2 <= surface1.aperture_radius**2
+
+    if surface2.aperture_radius is not None:
+        valid_samples &= x2**2 + y2**2 <= surface2.aperture_radius**2
+
+    if not np.any(valid_samples):
+        return SurfaceSeparationCheck(
+            valid=False,
+            min_separation=np.nan,
+            max_separation=np.nan,
+            r_crit=np.nan,
+            r_at_min=np.nan,
+            phi_at_min=np.nan,
+            point_at_min=np.array([np.nan, np.nan, np.nan]),
+            separation=separation,
+            valid_samples=valid_samples,
+        )
+
+    sep_valid = np.where(valid_samples, separation, np.inf)
+
+    min_idx = np.unravel_index(np.argmin(sep_valid), sep_valid.shape)
+
+    min_sep = sep_valid[min_idx]
+    max_sep = np.nanmax(np.where(valid_samples, separation, np.nan))
+
+    too_small = rr[valid_samples & (separation <= min_separation)]
+    r_crit = aperture_radius
+
+    if np.size(too_small) > 0:
+        r_crit = np.min(too_small)
+
+    point_at_min_global = p1_global[min_idx]
+
+    is_valid = bool(min_sep >= min_separation)
+
+    return SurfaceSeparationCheck(
+        valid=is_valid,
+        min_separation=float(min_sep),
+        max_separation=float(max_sep),
+        r_crit=float(r_crit),
+        r_at_min=float(rr[min_idx]),
+        phi_at_min=float(pp[min_idx]),
+        point_at_min=np.asarray(point_at_min_global, dtype=float),
+        separation=separation,
+        valid_samples=valid_samples,
+    )
+
+def check_lens_surface_separation(
+    lens,
+    n_r: int = 512,
+    n_phi: int = 64,
+    min_separation: float = 0.0,
+) -> SurfaceSeparationCheck:
+    """
+    Check physical thickness of a ThickRealLens in its local lens frame.
+
+    This is preferred over a generic global z-separation check because the lens
+    may be rotated.
+    """
+    r = np.linspace(0.0, lens.aperture, n_r)
+    phi = np.linspace(0.0, 2.0 * np.pi, n_phi, endpoint=False)
+
+    pp, rr = np.meshgrid(phi, r, indexing="ij")
+
+    x = rr * np.cos(pp)
+    y = rr * np.sin(pp)
+
+    z1 = lens.S1.z(x, y)
+    z2 = lens.center_thickness + lens.S2.z(x, y)
+
+    separation = z2 - z1
+
+    valid_samples = np.isfinite(separation)
+
+    if not np.any(valid_samples):
+        return SurfaceSeparationCheck(
+            valid=False,
+            min_separation=np.nan,
+            max_separation=np.nan,
+            r_crit=np.nan,
+            r_at_min=np.nan,
+            phi_at_min=np.nan,
+            point_at_min=np.array([np.nan, np.nan, np.nan]),
+            separation=separation,
+            valid_samples=valid_samples,
+        )
+
+    sep_valid = np.where(valid_samples, separation, np.inf)
+    min_idx = np.unravel_index(np.argmin(sep_valid), sep_valid.shape)
+
+    too_small = rr[valid_samples & (separation <= min_separation)]
+    r_crit = lens.aperture
+
+    if np.size(too_small) > 0:
+        r_crit = np.min(too_small)
+
+    point_local = np.array(
+        [
+            x[min_idx],
+            y[min_idx],
+            z1[min_idx],
+        ],
+        dtype=float,
+    )
+
+    point_global = lens.local_to_global_points(point_local)
+
+    return SurfaceSeparationCheck(
+        valid=bool(sep_valid[min_idx] >= min_separation),
+        min_separation=float(sep_valid[min_idx]),
+        max_separation=float(np.nanmax(separation)),
+        r_crit=float(r_crit),
+        r_at_min=float(rr[min_idx]),
+        phi_at_min=float(pp[min_idx]),
+        point_at_min=point_global,
+        separation=separation,
+        valid_samples=valid_samples,
+    )

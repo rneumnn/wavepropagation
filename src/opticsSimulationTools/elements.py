@@ -4,12 +4,13 @@ from scipy.constants import c, pi
 from .core.materials.materialCore import RefractiveIndexFunction
 from .core.materials.materials import AIR
 from .core.core_classes import RayBundle, RayTraceResult, element_base
-from .raytracing.backend.calculations import refract_rays, reflect_through, reflect
+from .raytracing.backend.calculations import refract_rays, reflect_rays
 from .raytracing.propagation import propagate_to_surface
-from .raytracing.backend.surfaces import SphericalSagSurface, PlaneSurface, check_surface_separation
-from .raytracing.backend.geometry import orient_normal_against_ray, normalize, intersect_planes
-from .raytracing.backend.visualization import plot_lens_outline_xz, plot_prism_outline_xz
+from .raytracing.backend.surfaces import SphericalSagSurface, PlaneSurface, FreeFormSurface, SurfaceSeparationCheck
+from .raytracing.backend.geometry import orient_normal_against_ray, normalize, intersect_planes, rotation_matrix_from_euler, orient_normal_against_ray
+from .raytracing.backend.visualization import plot_lens_outline_xz, plot_prism_outline_xz, plot_surface_xz
 from matplotlib.axes import Axes
+
 
 #Lenses
     
@@ -249,32 +250,195 @@ class ThinRealLens(element_base):
         out.spectral_phase_x += phase
         out.spectral_phase_y += phase
         return out
-    
+
+
+def check_lens_surface_separation(
+    lens: ThickRealLens,
+    n_r: int = 512,
+    n_phi: int = 64,
+    min_separation: float = 0.0,
+    include_center: bool = True,
+) -> SurfaceSeparationCheck:
+    """
+    Check the physical local thickness of a ThickRealLens.
+
+    This function is valid for rotated lenses because the check is performed in
+    the local lens coordinate system, not in global z.
+
+    Local lens convention
+    ---------------------
+    S1 vertex:
+        z = 0
+
+    S2 vertex:
+        z = center_thickness
+
+    Physical local thickness:
+        thickness(x, y) = center_thickness + S2.z(x, y) - S1.z(x, y)
+
+    Parameters
+    ----------
+    lens:
+        ThickRealLens instance.
+
+    n_r:
+        Number of radial samples.
+
+    n_phi:
+        Number of angular samples.
+
+    min_separation:
+        Minimum allowed physical thickness in meters.
+
+    include_center:
+        If True, include r = 0 in the sampling.
+
+    Returns
+    -------
+    SurfaceSeparationCheck
+        Diagnostic result containing the minimum separation and its location.
+    """
+    if include_center:
+        r = np.linspace(0.0, lens.aperture, n_r)
+    else:
+        r = np.linspace(lens.aperture / n_r, lens.aperture, n_r)
+
+    phi = np.linspace(0.0, 2.0 * np.pi, n_phi, endpoint=False)
+
+    pp, rr = np.meshgrid(phi, r, indexing="ij")
+
+    x = rr * np.cos(pp)
+    y = rr * np.sin(pp)
+
+    z1 = -0.5 * lens.center_thickness + lens.S1.z(x, y)
+    z2 = +0.5 * lens.center_thickness + lens.S2.z(x, y)
+
+    separation = z2 - z1
+    valid_samples = np.isfinite(separation)
+
+    if not np.any(valid_samples):
+        return SurfaceSeparationCheck(
+            valid=False,
+            min_separation=np.nan,
+            max_separation=np.nan,
+            r_crit=np.nan,
+            r_at_min=np.nan,
+            phi_at_min=np.nan,
+            point_at_min=np.array([np.nan, np.nan, np.nan], dtype=float),
+            separation=separation,
+            valid_samples=valid_samples,
+        )
+
+    sep_valid = np.where(valid_samples, separation, np.inf)
+    min_idx = np.unravel_index(np.argmin(sep_valid), sep_valid.shape)
+
+    min_sep = sep_valid[min_idx]
+    max_sep = np.nanmax(np.where(valid_samples, separation, np.nan))
+
+    too_small = rr[valid_samples & (separation <= min_separation)]
+
+    if np.size(too_small) > 0:
+        r_crit = np.min(too_small)
+    else:
+        r_crit = lens.aperture
+
+    point_local = np.array(
+        [
+            x[min_idx],
+            y[min_idx],
+            z1[min_idx],
+        ],
+        dtype=float,
+    )
+
+    point_global = lens.local_to_global_points(point_local)
+
+    return SurfaceSeparationCheck(
+        valid=bool(min_sep >= min_separation),
+        min_separation=float(min_sep),
+        max_separation=float(max_sep),
+        r_crit=float(r_crit),
+        r_at_min=float(rr[min_idx]),
+        phi_at_min=float(pp[min_idx]),
+        point_at_min=point_global,
+        separation=separation,
+        valid_samples=valid_samples,
+    )
+
+
 class ThickRealLens(element_base):
     """
-    Scalar split-step thick lens model.
+    Thick real lens with two spherical sag surfaces.
 
-    The lens is represented as a 3D refractive-index object between
-    two spherical surfaces z1(x,y) and z2(x,y).
+    The lens is represented by two local sag surfaces with fixed local
+    separation. The entire lens can be translated and rotated as a rigid body.
 
-    For each z-slice:
-        1. propagate through reference environment
-        2. add the extra phase caused by replacing environment with glass
-           over the fractional glass thickness in that slice
+    Local lens coordinate system
+    ----------------------------
+    The lens has its own local coordinate system.
 
-    This includes:
-        - curved surfaces
-        - finite center thickness
-        - material dispersion n_lens(lambda)
-        - surrounding medium n_environment(lambda)
-        - aperture
-        - diffraction through the finite thickness
+    Surface 1 vertex:
+        p1_local = [0, 0, 0]
 
-    It does not include:
-        - Fresnel reflections
-        - exact vector boundary conditions
-        - polarization-dependent interface effects
-        - full non-paraxial Snell refraction
+    Surface 2 vertex:
+        p2_local = [0, 0, center_thickness]
+
+    Surface equations:
+        z1_local(x, y) = S1.z(x, y)
+
+        z2_local(x, y) = center_thickness + S2.z(x, y)
+
+    Global embedding:
+        p_global = center_position + rotation @ p_local
+
+    Since this code stores points as row vectors (..., 3), the implementation is:
+
+        p_global = center_position + p_local @ rotation.T
+
+        p_local = (p_global - center_position) @ rotation
+
+    Parameters
+    ----------
+    R1:
+        Radius of curvature of the first surface in meters.
+
+    R2:
+        Radius of curvature of the second surface in meters.
+
+    center_thickness:
+        Distance between the two surface vertices in the local lens frame.
+
+    n:
+        Lens refractive index. Can be a scalar or callable n(wavelength).
+
+    center_position:
+        Global position of the first surface vertex.
+
+    n_environment:
+        Surrounding refractive index. Can be scalar, callable, or None.
+
+    aperture:
+        Circular aperture radius in the local lens x-y plane.
+
+    n_slices:
+        Number of slices for wave propagation.
+
+    hankel_backend:
+        Optional Hankel backend for radial wave propagation.
+
+    min_separation:
+        Minimum allowed local physical thickness.
+
+    rotation:
+        Optional 3x3 rotation matrix. If None, identity is used.
+
+    Notes
+    -----
+    Raytracing supports rotated lenses.
+
+    The current wave propagation implementation is a global-z split-step model.
+    It is only geometrically consistent for unrotated lenses. For rotated lenses
+    this class raises NotImplementedError in _apply_for_wavepropagation().
     """
 
     def __init__(
@@ -283,103 +447,232 @@ class ThickRealLens(element_base):
         R2: float,
         center_thickness: float,
         n,
-        center_position = None,
+        center_position=None,
         n_environment=None,
         aperture: float = 1e-2,
         n_slices: int = 64,
         hankel_backend=None,
-        min_seperation=0.2e-3
+        min_separation: float = 0.2e-3,
+        rotation=None,
     ):
-        """
-        Parameters
-        ----------
-        R1:
-            Radius of curvature of first surface [m].
-            Use optical sign convention.
-            R1 = 0 means flat.
+        super().__init__(
+            radial_symmetric=True,
+            n_environment=n_environment,
+        )
 
-        R2:
-            Radius of curvature of second surface [m].
-            Use optical sign convention.
-            R2 = 0 means flat.
-
-        center_thickness:
-            Lens center thickness [m].
-
-        n:
-            Lens refractive index.
-            Either float or callable n(wavelength).
-
-        center_position:
-            Position of the vertex of the first surface [m]. size (3)
-
-        n_environment:
-            Surrounding refractive index.
-            Either float, callable n(wavelength), or None.
-            If None, uses field.n_medium.
-        
-        aperture:
-            Absolute aperture [m]
-            Default 1e-2 m
-        
-        n_slices:
-            Number of longitudinal slices.
-        
-        hankel_backend:
-            Optional Hankel transform backend for radially symmetric fields.
-        """
-        super().__init__(radial_symmetric=True, n_environment=n_environment)
-        self.R1 = R1
-        self.R2 = R2
-        self.center_thickness = center_thickness
+        self.R1 = float(R1)
+        self.R2 = float(R2)
+        self.center_thickness = float(center_thickness)
         self.n = n
-        self.aperture = aperture
+        self.aperture = float(aperture)
         self.n_slices = int(n_slices)
-        self.description = f"Thick lens model with curved surfaces, finite thickness, material dispersion, and surrounding medium. R1={R1} m, R2={R2} m, center thickness={center_thickness} m, relative aperture={aperture}, n={n}, n_environment={n_environment}, n_slices={n_slices}."
         self.hankel_backend = hankel_backend
-        self.center_position = center_position
+
+        if center_position is None:
+            center_position = np.zeros(3, dtype=float)
+
+        if rotation is None:
+            rotation = np.eye(3, dtype=float)
+
+        self.center_position = np.asarray(center_position, dtype=float)
+        self.rotation = np.asarray(rotation, dtype=float)
+        self.rotation_inv = self.rotation.T
+
         if self.n_slices <= 0:
             raise ValueError("n_slices must be positive.")
-        
-        self.S1 = SphericalSagSurface(center_position=self.center_position,
-                                 R = self.R1, 
-                                 aperture_radius=self.aperture)
-        self.S2 = SphericalSagSurface(center_position=self.center_position + np.asarray((0,0,self.center_thickness)),
-                                 R = self.R2, 
-                                 aperture_radius=self.aperture)
-        self.surfaces=(self.S1,self.S2)
 
-        seperation = check_surface_separation(self.S1,
-                                              self.S2,
-                                              self.aperture,
-                                              min_separation=min_seperation)
-        if not seperation.valid:
-            raise ValueError(f"{self.name} is not physically valid with those parameters. The surface sepreration is not vaild.\n Minimum seperation {min_seperation} is reached at {seperation.r_crit} not at given aperture {aperture}! Increase material thickness or check radii.")
+        if self.center_thickness <= 0:
+            raise ValueError("center_thickness must be positive.")
+
+        if self.aperture <= 0:
+            raise ValueError("aperture must be positive.")
+
+        self.description = (
+            "ThickRealLens with two spherical sag surfaces, finite center "
+            "thickness, optional rigid-body rotation, material dispersion, "
+            f"and aperture. R1={self.R1} m, R2={self.R2} m, "
+            f"center_thickness={self.center_thickness} m, "
+            f"aperture={self.aperture} m, n={self.n}, "
+            f"n_environment={self.n_environment}, n_slices={self.n_slices}."
+        )
+
+        # In ThickRealLens.__init__
+
+        s1_local_center = np.array(
+            [0.0, 0.0, -0.5 * self.center_thickness],
+            dtype=float,
+        )
+
+        s2_local_center = np.array(
+            [0.0, 0.0, +0.5 * self.center_thickness],
+            dtype=float,
+        )
+
+        s1_global_center = self.local_to_global_points(s1_local_center)
+        s2_global_center = self.local_to_global_points(s2_local_center)
+
+        self.S1 = SphericalSagSurface(
+            center_position=s1_global_center,
+            R=self.R1,
+            aperture_radius=self.aperture,
+            rotation=self.rotation,
+        )
+
+        self.S2 = SphericalSagSurface(
+            center_position=s2_global_center,
+            R=self.R2,
+            aperture_radius=self.aperture,
+            rotation=self.rotation,
+        )
+
+        self.surfaces = (self.S1, self.S2)
+
+        separation = check_lens_surface_separation(
+            self,
+            min_separation=min_separation,
+        )
+
+        if not separation.valid:
+            raise ValueError(
+                f"{self.name} is not physically valid with those parameters. "
+                "The surface separation is not valid.\n"
+                f"Required minimum separation: {min_separation} m\n"
+                f"Actual minimum separation: {separation.min_separation} m\n"
+                f"Critical radius: {separation.r_crit} m\n"
+                f"Aperture radius: {self.aperture} m\n"
+                "Increase center_thickness or check R1/R2."
+            )
+
+    @classmethod
+    def from_euler_deg(
+        cls,
+        R1: float,
+        R2: float,
+        center_thickness: float,
+        n,
+        center_position=None,
+        rx_deg: float = 0.0,
+        ry_deg: float = 0.0,
+        rz_deg: float = 0.0,
+        order: str = "zyx",
+        **kwargs,
+    ):
+        """
+        Create a rotated ThickRealLens from Euler angles in degrees.
+
+        Parameters
+        ----------
+        rx_deg, ry_deg, rz_deg:
+            Rotation angles around x, y, z in degrees.
+
+        order:
+            Euler composition order. The default "zyx" corresponds to:
+
+                R = Rz @ Ry @ Rx
+
+        kwargs:
+            Forwarded to the ThickRealLens constructor.
+        """
+        rotation = rotation_matrix_from_euler(
+            rx=np.deg2rad(rx_deg),
+            ry=np.deg2rad(ry_deg),
+            rz=np.deg2rad(rz_deg),
+            order=order,
+        )
+
+        return cls(
+            R1=R1,
+            R2=R2,
+            center_thickness=center_thickness,
+            n=n,
+            center_position=center_position,
+            rotation=rotation,
+            **kwargs,
+        )
+
+    def local_to_global_points(self, points: np.ndarray) -> np.ndarray:
+        """
+        Transform points from local lens coordinates to global coordinates.
+        """
+        points = np.asarray(points, dtype=float)
+        return self.center_position + points @ self.rotation.T
+
+    def global_to_local_points(self, points: np.ndarray) -> np.ndarray:
+        """
+        Transform points from global coordinates to local lens coordinates.
+        """
+        points = np.asarray(points, dtype=float)
+        return (points - self.center_position) @ self.rotation
+
+    def local_to_global_directions(self, directions: np.ndarray) -> np.ndarray:
+        """
+        Transform direction vectors from local lens coordinates to global.
+
+        Direction vectors are not translated.
+        """
+        directions = np.asarray(directions, dtype=float)
+        return directions @ self.rotation.T
+
+    def global_to_local_directions(self, directions: np.ndarray) -> np.ndarray:
+        """
+        Transform direction vectors from global coordinates to local lens frame.
+
+        Direction vectors are not translated.
+        """
+        directions = np.asarray(directions, dtype=float)
+        return directions @ self.rotation
+
+    def _is_rotated(self, atol: float = 1e-12) -> bool:
+        """
+        Return True if the lens rotation is not approximately identity.
+        """
+        return not np.allclose(self.rotation, np.eye(3), atol=atol)
 
     def _n_value(self, n, wavelength: float) -> float:
+        """
+        Evaluate scalar or callable refractive index.
+        """
         if callable(n):
             return float(n(wavelength))
         return float(n)
 
     def _lens_index(self, wavelength: float) -> float:
+        """
+        Return lens refractive index at wavelength.
+        """
         return self._n_value(self.n, wavelength)
 
-    def _environment_index(self, field: Field) -> float:
+    def _environment_index(self, field: FieldBase) -> float:
+        """
+        Return surrounding refractive index for a field.
+        """
         if self.n_environment is None:
             return float(field.n_medium)
 
         return self._n_value(self.n_environment, field.wavelength)
 
-
-    def surfaces(self, field: Field) -> tuple[np.ndarray, np.ndarray]:
+    def surfaces_z_for_field(self, field: Field) -> tuple[np.ndarray, np.ndarray]:
         """
-        Return z1(x,y), z2(x,y) of the two lens surfaces.
+        Return z1(x, y), z2(x, y) for wave propagation.
+
+        This method assumes an unrotated lens whose local axis is aligned with
+        the global propagation z-axis.
 
         Glass exists where:
-            z1(x,y) <= z <= z2(x,y)
+            z1(x, y) <= z <= z2(x, y)
 
-        The second surface is shifted by center_thickness.
+        Returns
+        -------
+        z1, z2:
+            Arrays on the field grid.
         """
+        if self._is_rotated():
+            raise NotImplementedError(
+                "surfaces_z_for_field is only valid for unrotated lenses. "
+                "Rotated ThickRealLens wave propagation requires either "
+                "global z-surface intersection or a local-frame field transform."
+            )
+
         g = field.grid
         r = g.R
 
@@ -390,18 +683,43 @@ class ThickRealLens(element_base):
 
     def thickness(self, field: Field) -> np.ndarray:
         """
-        Physical thickness z2 - z1.
+        Physical local lens thickness on a Field grid.
+
+        Only valid for unrotated lenses in the current wave-propagation model.
         """
-        z1, z2 = self.surfaces(field)
+        z1, z2 = self.surfaces_z_for_field(field)
         t = z2 - z1
+
         return np.where(np.isfinite(t), np.maximum(t, 0.0), 0.0)
+
+    def local_thickness_xy(self, x, y):
+        """
+        Physical lens thickness in the local lens frame.
+
+        Parameters
+        ----------
+        x, y:
+            Local transverse coordinates.
+
+        Returns
+        -------
+        thickness:
+            center_thickness + S2.z(x, y) - S1.z(x, y)
+        """
+
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+
+        z1 = -0.5 * self.center_thickness + self.S1.z(x, y)
+        z2 = +0.5 * self.center_thickness + self.S2.z(x, y)
+
+        return z2 - z1
 
     def focal_length(self, wavelength: float) -> float:
         """
-        Thick-lens paraxial focal length using lensmaker equation.
+        Thick-lens paraxial focal length using the lensmaker equation.
 
-        This is mainly diagnostic. The actual apply() method does not
-        use this f to impose a thin-lens phase.
+        This is a diagnostic value. It is independent of rigid-body rotation.
         """
         n_lens = self._lens_index(wavelength)
 
@@ -416,7 +734,6 @@ class ThickRealLens(element_base):
         if np.isinf(R1) and np.isinf(R2):
             return np.inf
 
-        # Relative index
         n_rel = n_lens / n_env
 
         power = (n_rel - 1.0) * (
@@ -438,42 +755,6 @@ class ThickRealLens(element_base):
     ) -> FieldBase:
         """
         Homogeneous angular-spectrum propagation through a medium.
-
-        This method supports both Cartesian and radially symmetric fields.
-
-        For a Cartesian ``Field`` it uses the ordinary 2D FFT angular-spectrum
-        method.
-
-        For a ``RadialField`` it uses the zeroth-order Hankel angular-spectrum
-        method through ``self.hankel_backend``.
-
-        The medium wavenumber is
-
-            k = 2*pi*n_medium/lambda_vac
-
-        Parameters
-        ----------
-        field:
-            Input field. Must be either ``Field`` or ``RadialField``.
-
-        dz:
-            Propagation distance in meters.
-
-        n_medium:
-            Refractive index of the homogeneous propagation medium.
-
-        Returns
-        -------
-        out:
-            Propagated field of the same class as ``field``.
-
-        Notes
-        -----
-        The complex field propagation is fully spatially resolved.
-
-        The update of ``spectral_phase_x`` and ``spectral_phase_y`` only adds the
-        on-axis phase ``k*dz``. It is bookkeeping for spectral phase / GD / GDD
-        analysis and is not the full transverse angular-spectrum phase.
         """
         if dz == 0:
             out = field.copy()
@@ -498,7 +779,7 @@ class ThickRealLens(element_base):
             "_propagate_homogeneous requires Field or RadialField, "
             f"got {type(field).__name__}."
         )
-    
+
     def _propagate_homogeneous_cartesian(
         self,
         field: Field,
@@ -506,12 +787,12 @@ class ThickRealLens(element_base):
         n_medium: float,
     ) -> Field:
         """
-        Homogeneous angular-spectrum propagation for a Cartesian 2D Field.
+        Homogeneous angular-spectrum propagation for a Cartesian Field.
         """
         g = field.grid
         wl = field.wavelength
 
-        k = 2 * np.pi * n_medium / wl
+        k = 2.0 * np.pi * n_medium / wl
 
         kz = np.sqrt((k**2 - g.KX**2 - g.KY**2) + 0j)
         H = np.exp(1j * kz * dz)
@@ -527,7 +808,7 @@ class ThickRealLens(element_base):
         out.n_medium = n_medium
 
         return out
-    
+
     def _propagate_homogeneous_radial(
         self,
         field: RadialField,
@@ -535,17 +816,18 @@ class ThickRealLens(element_base):
         n_medium: float,
     ) -> RadialField:
         """
-        Homogeneous angular-spectrum propagation for a cylindrically symmetric
-        RadialField using a zeroth-order Hankel transform backend.
+        Homogeneous angular-spectrum propagation for RadialField.
         """
         if not hasattr(self, "hankel_backend") or self.hankel_backend is None:
             raise ValueError(
                 "Radial homogeneous propagation requires self.hankel_backend. "
-                "Set it in the ThickRealLens constructor or pass it before applying."
+                "Set it in the ThickRealLens constructor."
             )
+
         hbe = self.hankel_backend(radial_grid=field.grid)
+
         wl = field.wavelength
-        k = 2 * np.pi * n_medium / wl
+        k = 2.0 * np.pi * n_medium / wl
 
         kr = hbe.kr
         kz = np.sqrt((k**2 - kr**2) + 0j)
@@ -566,17 +848,35 @@ class ThickRealLens(element_base):
 
         return out
 
-    def _apply_for_wavepropagation(self, field: Field) -> Field:
+    def _apply_for_wavepropagation(self, field: FieldBase) -> FieldBase:
+        """
+        Apply the thick-lens split-step wave-propagation model.
+
+        This implementation is only valid for unrotated lenses. For rotated
+        lenses, raytracing remains valid, but this split-step method is not.
+        """
+        if self._is_rotated():
+            raise NotImplementedError(
+                "Wave propagation through rotated ThickRealLens is not "
+                "implemented. Use raytracing, or implement global-z slicing "
+                "or a local-frame field transform."
+            )
+
+        if not isinstance(field, Field):
+            raise TypeError(
+                "_apply_for_wavepropagation currently expects Field. "
+                f"Got {type(field).__name__}."
+            )
+
         g = field.grid
         wl = field.wavelength
 
         n_lens = self._lens_index(wl)
         n_env = self._environment_index(field)
 
-        k0 = 2 * np.pi / wl
-        k_env = k0 * n_env
+        k0 = 2.0 * np.pi / wl
 
-        z1, z2 = self.surfaces(field)
+        z1, z2 = self.surfaces_z_for_field(field)
 
         aperture = g.R <= self.aperture
         valid_surfaces = np.isfinite(z1) & np.isfinite(z2) & (z2 >= z1)
@@ -599,19 +899,10 @@ class ThickRealLens(element_base):
 
         out = field.copy()
 
-        # The field is assumed to enter the bounding box at z_min.
-        # We propagate through the whole box in the environment,
-        # while adding the extra phase where glass replaces environment.
         for i in range(self.n_slices):
             slice_start = z_min + i * dz
             slice_end = slice_start + dz
 
-            # Fractional glass length in this slice:
-            #
-            # glass_dz(x,y) =
-            #   max(0, min(z2, slice_end) - max(z1, slice_start))
-            #
-            # This smoothly handles curved surfaces and avoids staircase artifacts.
             glass_dz = np.maximum(
                 0.0,
                 np.minimum(z2, slice_end) - np.maximum(z1, slice_start),
@@ -619,67 +910,93 @@ class ThickRealLens(element_base):
 
             glass_dz = np.where(valid, glass_dz, 0.0)
 
-            # Half-step propagation in surrounding medium
             out = self._propagate_homogeneous(out, dz / 2.0, n_env)
 
-            # Extra phase due to replacing environment by glass.
-            #
-            # Full slice phase would be:
-            #   k0*n_lens*glass_dz + k0*n_env*(dz - glass_dz)
-            #
-            # But the homogeneous propagation already accounts for:
-            #   k0*n_env*dz
-            #
-            # Therefore only add:
-            #   k0*(n_lens - n_env)*glass_dz
             delta_phase = k0 * (n_lens - n_env) * glass_dz
-
             transmission = np.exp(1j * delta_phase)
 
             out.Ex *= transmission
             out.Ey *= transmission
 
-            # Store unwrapped material excess phase.
             out.spectral_phase_x += delta_phase
             out.spectral_phase_y += delta_phase
-            # Second half-step propagation in surrounding medium
+
             out = self._propagate_homogeneous(out, dz / 2.0, n_env)
 
-        # Clip outside aperture after lens
         out.Ex = np.where(aperture, out.Ex, 0.0)
         out.Ey = np.where(aperture, out.Ey, 0.0)
 
-        # Field exits back into environment
         out.n_medium = n_env
 
         return out
-    
-    def _apply_for_raytracing(self, rays:RayBundle):
-        rays_at_s1 = propagate_to_surface(rays=rays,
-                                     surface=self.S1)
-        rays_at_s1.last_element = self
-        normals = orient_normal_against_ray(rays_at_s1.directions, self.S1.normal_at_points(rays_at_s1.positions))
-        refracted_rays1 = refract_rays(rays_at_s1, normals, self.n)
-        rays_at_s2 = propagate_to_surface(refracted_rays1, self.S2)
-        normals = orient_normal_against_ray(rays_at_s2.directions, self.S2.normal_at_points(rays_at_s2.positions))
-        refracted_rays2 = refract_rays(rays_at_s2, normals, self.n_environment)
-        refracted_rays2 = self._apply_aperture(refracted_rays2)
-        result = RayTraceResult(
-            rays=refracted_rays2,
-            history=[rays_at_s1,refracted_rays1,rays_at_s2,refracted_rays2],
-            elements=[self]
+
+    def _apply_for_raytracing(self, rays: RayBundle) -> RayTraceResult:
+        """
+        Trace rays through the rotated thick lens.
+
+        Steps
+        -----
+        1. Propagate to first surface.
+        2. Refract into lens material.
+        3. Propagate to second surface.
+        4. Refract back into environment.
+        5. Apply local aperture and physical thickness mask.
+        """
+        rays_at_s1 = propagate_to_surface(
+            rays=rays,
+            surface=self.S1,
         )
-        return result
-    
+        rays_at_s1.last_element = self
+
+        normals_s1 = orient_normal_against_ray(
+            rays_at_s1.directions,
+            self.S1.normal_at_points(rays_at_s1.positions),
+        )
+
+        refracted_rays1 = refract_rays(
+            rays_at_s1,
+            normals_s1,
+            self.n,
+        )
+
+        rays_at_s2 = propagate_to_surface(
+            refracted_rays1,
+            self.S2,
+        )
+        rays_at_s2.last_element = self
+
+        normals_s2 = orient_normal_against_ray(
+            rays_at_s2.directions,
+            self.S2.normal_at_points(rays_at_s2.positions),
+        )
+
+        refracted_rays2 = refract_rays(
+            rays_at_s2,
+            normals_s2,
+            self.n_environment,
+        )
+
+        refracted_rays2 = self._apply_aperture(refracted_rays2)
+
+        return RayTraceResult(
+            rays=refracted_rays2,
+            history=[
+                rays_at_s1,
+                refracted_rays1,
+                rays_at_s2,
+                refracted_rays2,
+            ],
+            elements=[self],
+        )
+
     def aperture_mask(self, rays: RayBundle) -> np.ndarray:
         """
-        Aperture and finite-prism check at current ray positions.
+        Aperture and finite-lens validity check.
 
-        The ray positions are assumed to lie on one of the prism surfaces.
+        The check is done in the local lens frame, so it remains valid for
+        rotated lenses.
         """
-        def thickness(x,y):
-            return np.abs(self.S1.z(x,y)-(self.center_thickness+self.S2.z(x,y)))
-        local = rays.positions - self.center_position
+        local = self.global_to_local_points(rays.positions)
 
         x = local[..., 0]
         y = local[..., 1]
@@ -689,41 +1006,66 @@ class ThickRealLens(element_base):
         if self.aperture is not None:
             mask &= x**2 + y**2 <= self.aperture**2
 
-        # if np.sign(self.stop_aperture_y) == -1:
-        #     mask &= y>self.stop_aperture_y
-        # else:
-        #     mask &= y<self.stop_aperture_y
+        thickness = self.local_thickness_xy(x, y)
 
-        # Check that the projected x-position is still inside a physical
-        # region where S2 lies behind S1.
-        t = thickness(rays.positions[..., 0],rays.positions[..., 1])
-        mask &= np.isfinite(t)
-        mask &= t >= -1e-15
+        mask &= np.isfinite(thickness)
+        mask &= thickness >= -1e-15
 
         return mask
-    
+
     def _apply_aperture(self, rays: RayBundle) -> RayBundle:
+        """
+        Return a copy of rays with invalid aperture rays removed.
+        """
         out = rays.copy()
         out.valid &= self.aperture_mask(out)
         return out
-        
-    def plot_to_axes_xz(self, ax:Axes, color = "black", unit = "mm", fill = True, **kwargs):
 
-        plot_lens_outline_xz(self.S1, self.S2, ax, fill=fill, unit = unit, color = color, **kwargs)
+    def plot_to_axes_xz(
+        self,
+        ax: Axes,
+        color="black",
+        unit="mm",
+        fill=True,
+        **kwargs,
+    ):
+        """
+        Plot lens outline in the x-z plane.
 
-        
-
+        This relies on plot_lens_outline_xz using the surfaces' rotated
+        points_xz/global_points methods. If your plotting helper still assumes
+        unrotated z(x, y), update it accordingly.
+        """
+        return plot_lens_outline_xz(
+            self.S1,
+            self.S2,
+            ax,
+            fill=fill,
+            unit=unit,
+            color=color,
+            **kwargs,
+        )
 
     def plot_geometry(self, field: FieldBase):
         """
-        Plot lens surfaces and thickness for debugging.
+        Plot lens thickness and surface cross-section for debugging.
+
+        Only valid for unrotated wave-propagation geometry.
         """
+        if self._is_rotated():
+            raise NotImplementedError(
+                "plot_geometry currently supports only unrotated lenses."
+            )
+
         import matplotlib.pyplot as plt
-        if field.is_radial:
-            raise NotImplementedError("plot_geometry is not yet implemented for radial fields.")
-        
+
+        if getattr(field, "is_radial", False):
+            raise NotImplementedError(
+                "plot_geometry is not implemented for radial fields."
+            )
+
         g = field.grid
-        z1, z2 = self.surfaces(field)
+        z1, z2 = self.surfaces_z_for_field(field)
         t = self.thickness(field)
 
         ix = g.N // 2
@@ -756,6 +1098,7 @@ class ThickRealLens(element_base):
 
         plt.tight_layout()
         plt.show()
+
 class PhaseGrating(element_base):
     def __init__(
         self,
@@ -1472,3 +1815,360 @@ class Screen(element_base):
     def FlatScreen(cls, center_position, normal = np.array((0,0,-1)), **kwargs):
         S1 = PlaneSurface(center_position, normal=normal, **kwargs)
         return cls(center_position=center_position, surfaces = [S1])
+    
+
+class Mirror(element_base):
+    """
+    Ideal specular mirror for raytracing.
+
+    The mirror uses any Surface object as its reflecting geometry.
+
+    Supported surfaces
+    ------------------
+    Examples:
+        PlaneSurface
+        SphericalSagSurface
+        FreeFormSurface
+
+    Raytracing steps
+    ----------------
+    1. Propagate rays to the mirror surface.
+    2. Compute surface normals at hit points.
+    3. Reflect ray directions.
+    4. Apply aperture mask.
+
+    Notes
+    -----
+    This is a geometrical mirror. It does not model:
+        - polarization-dependent reflection
+        - Fresnel coefficients
+        - coating phase
+        - absorption
+        - surface roughness
+
+    A constant phase shift can optionally be added.
+    """
+
+    def __init__(
+        self,
+        surface,
+        center_position,
+        phase_shift: float = 0.0,
+        apply_aperture: bool = True,
+        unfold: bool = False,
+        unfold_reference_z: float | None = None,
+        only_if_negative_z: bool = True,
+    ):
+        super().__init__(radial_symmetric=False, center_position=center_position)
+
+        self.surface = surface
+        self.phase_shift = float(phase_shift)
+        self.apply_aperture = bool(apply_aperture)
+        self.unfold = bool(unfold)
+        self.unfold_reference_z = unfold_reference_z
+        self.only_if_negative_z = bool(only_if_negative_z)
+
+        self.surfaces = [self.surface]
+
+        self.description = (
+            f"Ideal specular mirror using {type(surface).__name__}. "
+            f"phase_shift={self.phase_shift} rad, "
+            f"unfold={self.unfold}."
+        )
+
+    def aperture_mask(self, rays: RayBundle) -> np.ndarray:
+        """
+        Check whether ray positions lie inside the mirror aperture.
+
+        The aperture is evaluated in the local coordinate system of the surface.
+        """
+        aperture_radius = getattr(self.surface, "aperture_radius", None)
+
+        if aperture_radius is None:
+            return np.ones(rays.shape, dtype=bool)
+
+        local = self.surface.global_to_local_points(rays.positions)
+
+        x = local[..., 0]
+        y = local[..., 1]
+
+        return x**2 + y**2 <= aperture_radius**2
+
+    def _apply_aperture(self, rays: RayBundle) -> RayBundle:
+        out = rays.copy()
+
+        if self.apply_aperture:
+            out.valid &= self.aperture_mask(out)
+
+        return out
+
+    def _apply_for_raytracing(self, rays: RayBundle) -> RayTraceResult:
+        history = [rays.copy()]
+
+        rays_at_surface = propagate_to_surface(
+            rays=rays,
+            surface=self.surface,
+        )
+        rays_at_surface.last_element = self
+        history.append(rays_at_surface.copy())
+
+        normals = self.surface.normal_at_points(
+            rays_at_surface.positions,
+        )
+
+        normals = orient_normal_against_ray(
+            rays_at_surface.directions,
+            normals,
+        )
+
+        if self.unfold_reference_z is None:
+            unfold_reference_z = self.surface.center_position[2]
+        else:
+            unfold_reference_z = self.unfold_reference_z
+
+        reflected = reflect_rays(
+            rays=rays_at_surface,
+            normal=normals,
+            phase_shift=self.phase_shift,
+            unfold=self.unfold,
+            unfold_reference_z=unfold_reference_z,
+            only_if_negative_z=self.only_if_negative_z,
+        )
+
+        reflected = self._apply_aperture(reflected)
+        reflected.last_element = self
+
+        history.append(reflected.copy())
+
+        return RayTraceResult(
+            rays=reflected.copy(),
+            history=history,
+            elements=[self],
+        )
+
+    def plot_to_axes_xz(
+        self,
+        ax,
+        color="black",
+        unit="mm",
+        **kwargs,
+    ):
+        """
+        Plot mirror surface in the x-z plane.
+        """
+        return plot_surface_xz(
+            self.surface,
+            ax,
+            unit=unit,
+            color=color,
+            **kwargs,
+        )
+
+class PlaneMirror(Mirror):
+    """
+    Ideal plane mirror.
+
+    The mirror surface is a PlaneSurface.
+
+    Parameters
+    ----------
+    center_position:
+        Global point on the mirror plane.
+
+    normal:
+        Local plane normal before applying rotation.
+
+    aperture_radius:
+        Optional circular aperture radius.
+
+    rotation:
+        Optional rotation matrix for the surface coordinate frame.
+
+    phase_shift:
+        Optional constant reflection phase shift.
+    """
+
+    def __init__(
+        self,
+        center_position=None,
+        normal=None,
+        aperture_radius=None,
+        rotation=None,
+        phase_shift: float = 0.0,
+        unfold = False
+    ):
+        surface = PlaneSurface(
+            center_position=center_position,
+            normal=normal,
+            aperture_radius=aperture_radius,
+            rotation=rotation,
+        )
+
+        super().__init__(
+            surface=surface,
+            phase_shift=phase_shift,
+            center_position=center_position,
+            unfold=unfold
+        )
+
+    def _apply_for_raytracing(self, rays):
+        return super()._apply_for_raytracing(rays)
+
+    @classmethod
+    def from_euler_deg(
+        cls,
+        center_position=None,
+        normal=None,
+        aperture_radius=None,
+        rx_deg: float = 0.0,
+        ry_deg: float = 0.0,
+        rz_deg: float = 0.0,
+        order: str = "zyx",
+        phase_shift: float = 0.0,
+        unfold:bool = False
+    ):
+        rotation = rotation_matrix_from_euler(
+            rx=np.deg2rad(rx_deg),
+            ry=np.deg2rad(ry_deg),
+            rz=np.deg2rad(rz_deg),
+            order=order,
+        )
+
+        return cls(
+            center_position=center_position,
+            normal=normal,
+            aperture_radius=aperture_radius,
+            rotation=rotation,
+            phase_shift=phase_shift,
+            unfold=unfold
+        )
+
+class SphericalMirror(Mirror):
+    """
+    Ideal spherical sag mirror.
+
+    The mirror geometry is a SphericalSagSurface.
+
+    Parameters
+    ----------
+    center_position:
+        Global position of the mirror vertex.
+
+    R:
+        Radius of curvature.
+
+    aperture_radius:
+        Circular aperture radius.
+
+    rotation:
+        Optional rotation of the mirror local frame.
+
+    phase_shift:
+        Optional constant phase shift.
+    """
+
+    def __init__(
+        self,
+        center_position=None,
+        R: float = 0.0,
+        aperture_radius=None,
+        rotation=None,
+        phase_shift: float = 0.0,
+        unfold:bool = False
+    ):
+        surface = SphericalSagSurface(
+            center_position=center_position,
+            R=R,
+            aperture_radius=aperture_radius,
+            rotation=rotation,
+        )
+
+        super().__init__(
+            surface=surface,
+            phase_shift=phase_shift,
+            center_position=center_position,
+            unfold=unfold
+        )
+
+        self.R = float(R)
+
+    def _apply_for_raytracing(self, rays):
+        return super()._apply_for_raytracing(rays)
+    
+    @classmethod
+    def from_euler_deg(
+        cls,
+        center_position=None,
+        R: float = 0.0,
+        aperture_radius=None,
+        rx_deg: float = 0.0,
+        ry_deg: float = 0.0,
+        rz_deg: float = 0.0,
+        order: str = "zyx",
+        phase_shift: float = 0.0,
+        unfold:bool = False,
+    ):
+        rotation = rotation_matrix_from_euler(
+            rx=np.deg2rad(rx_deg),
+            ry=np.deg2rad(ry_deg),
+            rz=np.deg2rad(rz_deg),
+            order=order,
+        )
+
+        return cls(
+            center_position=center_position,
+            R=R,
+            aperture_radius=aperture_radius,
+            rotation=rotation,
+            phase_shift=phase_shift,
+            unfold = unfold
+        )
+    
+class Axiparabola(Mirror):
+    def __init__(self, F0, L, aperture_radius, center_position, phase_shift = 0, apply_aperture = True, unfold = False, unfold_reference_z = None, only_if_negative_z = True, rotation = None):
+        surface = FreeFormSurface.from_sag_function(
+            center_position=center_position,
+            sag_function=Axiparabola.sag_function_axiparabola(F0,L,aperture_radius),
+            aperture_radius=aperture_radius, 
+            rotation=rotation)
+        
+        super().__init__(surface, center_position, phase_shift, apply_aperture, unfold, unfold_reference_z, only_if_negative_z)
+
+    @staticmethod
+    def sag_function_axiparabola(F0, L, RMAX):
+        #R = np.sqrt(x**2 + y**2)
+        s_ax = lambda x,y: -(np.sqrt(x**2 + y**2)**2/4/F0 \
+                - L * np.sqrt(x**2 + y**2)**4 / (8*F0**2*RMAX**2) \
+                + L * np.sqrt(x**2 + y**2)**6 * (np.sqrt(x**2 + y**2)**2 + 8*F0*L) / (96*F0**4*RMAX **4))
+        return s_ax
+    
+    @classmethod
+    def from_euler_deg(cls, F0, L, aperture_radius, center_position, rx_deg=0, ry_deg=0, rz_deg=0, order = "zyx", phase_shift = 0, apply_aperture = True, unfold = False, unfold_reference_z = None, only_if_negative_z = True):
+        rotation = rotation_matrix_from_euler(
+            rx=np.deg2rad(rx_deg),
+            ry=np.deg2rad(ry_deg),
+            rz=np.deg2rad(rz_deg),
+            order=order,
+        )
+        return cls(
+            F0 = F0,
+            L = L,
+            aperture_radius = aperture_radius,
+            center_position=center_position,
+            rotation=rotation,
+            phase_shift=phase_shift,
+            apply_aperture=apply_aperture,
+            unfold=unfold,
+            unfold_reference_z = unfold_reference_z,
+            only_if_negative_z = only_if_negative_z
+        )
+
+# class TransmittingMirror(element_base):
+#     """class for representing a mirror, but translating so that they keep their direction (vertically mirrored to the real mirror behavior)"""
+#     def __init__(self, radial_symmetric=False, center_position = None, surfaces = None, n_environment=None):
+#         super().__init__(radial_symmetric, center_position, surfaces, n_environment)
+
+#     def _apply_for_raytracing(self, rays):
+#         at_surface = propagate_to_surface(rays, self.surfaces[0])
+#         at_surface.last_element = self
+

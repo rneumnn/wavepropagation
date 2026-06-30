@@ -41,6 +41,49 @@ def plot_surface_xz(
 
     return artist
 
+def plot_surface_yz(
+    surface,
+    ax,
+    ylim=None,
+    n_points: int = 1000,
+    unit: str = "mm",
+    **kwargs,
+):
+
+    scale = scale_map[unit]
+
+    if ylim is None:
+        aperture = getattr(surface, "aperture_radius", None)
+
+        if aperture is None:
+            raise ValueError(
+                f"ylim must be given if {type(surface).__name__} "
+                "has no aperture_radius."
+            )
+
+        ylim = (-aperture, aperture)
+
+    y_local = np.linspace(ylim[0], ylim[1], n_points)
+
+    points = surface.points_yz(y_local)
+
+    y_global = points[..., 1]
+    z_global = points[..., 2]
+
+    valid = np.isfinite(y_global) & np.isfinite(z_global)
+
+    artists = ax.plot(
+        z_global[valid] * scale,
+        y_global[valid] * scale,
+        **kwargs,
+    )
+
+    ax.set_xlabel(f"z [{unit}]")
+    ax.set_ylabel(f"y [{unit}]")
+    ax.grid(True)
+
+    return artists
+
 def plot_raybundle_history_xz(
     history,
     ax,
@@ -279,10 +322,17 @@ def plot_lens_outline_xz(
     n_points: int = 1000,
     unit: str = "mm",
     fill: bool = False,
-    fill_alpha = .2,
-    fill_color = "cyan",
+    fill_alpha: float = 0.2,
+    fill_color: str = "cyan",
     **kwargs,
 ):
+    """
+    Plot a two-surface lens outline in the global x-z plane.
+
+    The sampling coordinate is local x. Both surfaces are evaluated using their
+    own points_xz() method, so rotated surfaces are supported.
+    """
+
     scale = scale_map[unit]
 
     if xlim is None:
@@ -290,55 +340,68 @@ def plot_lens_outline_xz(
         a2 = getattr(surface2, "aperture_radius", None)
 
         if a1 is None or a2 is None:
-            raise ValueError("xlim must be given if surfaces have no aperture_radius.")
+            raise ValueError(
+                "xlim must be given if surfaces have no aperture_radius."
+            )
 
         aperture = min(a1, a2)
         xlim = (-aperture, aperture)
 
-    x = np.linspace(xlim[0], xlim[1], n_points)
+    x_local = np.linspace(xlim[0], xlim[1], n_points)
 
-    z1 = surface1.center_position[2] + surface1.z(
-        x - surface1.center_position[0],
-        np.zeros_like(x),
+    p1 = surface1.points_xz(x_local)
+    p2 = surface2.points_xz(x_local)
+
+    x1 = p1[..., 0]
+    z1 = p1[..., 2]
+
+    x2 = p2[..., 0]
+    z2 = p2[..., 2]
+
+    valid = (
+        np.isfinite(x1)
+        & np.isfinite(z1)
+        & np.isfinite(x2)
+        & np.isfinite(z2)
     )
-    z2 = surface2.center_position[2] + surface2.z(
-        x - surface2.center_position[0],
-        np.zeros_like(x),
-    )
 
-    x_global = x+surface1.center_position[0]
-
-    valid = np.isfinite(z1) & np.isfinite(z2)
-
+    x1 = x1[valid]
     z1 = z1[valid]
-    z2 = z2[valid]
-    x_global = x_global[valid]
 
-    # Closed contour:
-    # surface1 from bottom to top,
-    # surface2 from top back to bottom.
+    x2 = x2[valid]
+    z2 = z2[valid]
+
+    if x1.size < 2:
+        raise ValueError("Not enough valid points to plot lens outline.")
+
     z_poly = np.concatenate([z1, z2[::-1], z1[:1]])
-    x_poly = np.concatenate([x_global, x_global[::-1], x_global[:1]])
+    x_poly = np.concatenate([x1, x2[::-1], x1[:1]])
+
+    artists = []
 
     if fill:
-        artist = ax.fill(
+        artists.extend(
+            ax.fill(
+                z_poly * scale,
+                x_poly * scale,
+                alpha=fill_alpha,
+                color=fill_color,
+            )
+        )
+
+    artists.extend(
+        ax.plot(
             z_poly * scale,
             x_poly * scale,
-            alpha = fill_alpha,
-            color = fill_color,
+            **kwargs,
         )
-    artist = ax.plot(
-        z_poly * scale,
-        x_poly * scale,
-        **kwargs,
     )
 
     ax.set_xlabel(f"z [{unit}]")
     ax.set_ylabel(f"x [{unit}]")
-    ax.set_aspect("equal", adjustable="datalim")
     ax.grid(True)
 
-    return artist
+    return artists
 
 def connect_surface_line_ends(line1, line2, ax=None, **kwargs):
     """
@@ -441,3 +504,91 @@ def plot_prism_outline_xz(
     ax.grid(True)
 
     return artist
+
+def plot_lens_outline_yz(
+    surface1,
+    surface2,
+    ax,
+    ylim=None,
+    n_points: int = 1000,
+    unit: str = "mm",
+    fill: bool = False,
+    fill_alpha: float = 0.2,
+    fill_color: str = "cyan",
+    **kwargs,
+):
+    scale_map = {
+        "m": 1.0,
+        "mm": 1e3,
+        "um": 1e6,
+        "µm": 1e6,
+    }
+
+    scale = scale_map[unit]
+
+    if ylim is None:
+        a1 = getattr(surface1, "aperture_radius", None)
+        a2 = getattr(surface2, "aperture_radius", None)
+
+        if a1 is None or a2 is None:
+            raise ValueError(
+                "ylim must be given if surfaces have no aperture_radius."
+            )
+
+        aperture = min(a1, a2)
+        ylim = (-aperture, aperture)
+
+    y_local = np.linspace(ylim[0], ylim[1], n_points)
+
+    p1 = surface1.points_yz(y_local)
+    p2 = surface2.points_yz(y_local)
+
+    y1 = p1[..., 1]
+    z1 = p1[..., 2]
+
+    y2 = p2[..., 1]
+    z2 = p2[..., 2]
+
+    valid = (
+        np.isfinite(y1)
+        & np.isfinite(z1)
+        & np.isfinite(y2)
+        & np.isfinite(z2)
+    )
+
+    y1 = y1[valid]
+    z1 = z1[valid]
+    y2 = y2[valid]
+    z2 = z2[valid]
+
+    if y1.size < 2:
+        raise ValueError("Not enough valid points to plot lens outline.")
+
+    z_poly = np.concatenate([z1, z2[::-1], z1[:1]])
+    y_poly = np.concatenate([y1, y2[::-1], y1[:1]])
+
+    artists = []
+
+    if fill:
+        artists.extend(
+            ax.fill(
+                z_poly * scale,
+                y_poly * scale,
+                alpha=fill_alpha,
+                color=fill_color,
+            )
+        )
+
+    artists.extend(
+        ax.plot(
+            z_poly * scale,
+            y_poly * scale,
+            **kwargs,
+        )
+    )
+
+    ax.set_xlabel(f"z [{unit}]")
+    ax.set_ylabel(f"y [{unit}]")
+    ax.grid(True)
+
+    return artists
