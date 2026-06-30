@@ -7,86 +7,39 @@ def plot_surface_xz(
     ax,
     xlim=None,
     n_points: int = 1000,
-    y: float = 0.0,
     unit: str = "mm",
-    label: str | None = None,
-    **plot_kwargs,
+    **kwargs,
 ):
-    """
-    Plot the x-z meridional cross-section of a surface on a given matplotlib axis.
-
-    Parameters
-    ----------
-    surface:
-        Surface object with method z(x, y) and attribute center_position.
-
-    ax:
-        matplotlib.axes.Axes instance.
-
-    xlim:
-        Tuple (xmin, xmax) in meters. If None, uses aperture_radius if available.
-
-    n_points:
-        Number of sample points.
-
-    y:
-        Local y-coordinate at which the cross-section is evaluated.
-
-    unit:
-        Plot unit. Supported: "m", "mm", "um".
-
-    label:
-        Optional plot label. If None, uses surface.name if available.
-
-    **plot_kwargs:
-        Additional keyword arguments passed to ax.plot().
-
-    Returns
-    -------
-    line:
-        Matplotlib line object.
-    """
-
-    if unit not in scale_map:
-        raise ValueError(f"Unsupported unit: {unit}")
-
     scale = scale_map[unit]
 
     if xlim is None:
-        aperture_radius = getattr(surface, "aperture_radius", None)
+        aperture = getattr(surface, "aperture_radius", None)
 
-        if aperture_radius is not None:
-            xlim = (-aperture_radius, aperture_radius)
-        else:
-            xlim = (-0.01, 0.01)
+        if aperture is None:
+            raise ValueError("xlim must be given if surface has no aperture_radius.")
 
-    x = np.linspace(xlim[0], xlim[1], n_points)
-    z_local = surface.z(x, y)
+        xlim = (-aperture, aperture)
 
-    z_global = surface.center_position[2] + z_local
-    x_global = surface.center_position[0] + x
+    x_local = np.linspace(xlim[0], xlim[1], n_points)
 
-    valid = np.isfinite(z_global)
+    points = surface.points_xz(x_local)
 
-    if label is None:
-        label = getattr(surface, "name", type(surface).__name__)
+    x_global = points[..., 0]
+    z_global = points[..., 2]
 
-    line = ax.plot(
+    valid = np.isfinite(x_global) & np.isfinite(z_global)
+
+    artist = ax.plot(
         z_global[valid] * scale,
         x_global[valid] * scale,
-        label=label,
-        **plot_kwargs,
+        **kwargs,
     )
 
     ax.set_xlabel(f"z [{unit}]")
     ax.set_ylabel(f"x [{unit}]")
-    ax.set_aspect("equal", adjustable="box")
     ax.grid(True)
 
-    return line
-
-import numpy as np
-
+    return artist
 
 def plot_raybundle_history_xz(
     history,
@@ -243,7 +196,7 @@ def plot_raybundle_history_xz(
 
     ax.set_xlabel(f"z [{unit}]")
     ax.set_ylabel(f"x [{unit}]")
-    ax.set_aspect("equal", adjustable="box")
+    ax.set_aspect("equal", adjustable="datalim")
     ax.grid(True)
 
     return ax
@@ -382,7 +335,7 @@ def plot_lens_outline_xz(
 
     ax.set_xlabel(f"z [{unit}]")
     ax.set_ylabel(f"x [{unit}]")
-    ax.set_aspect("equal", adjustable="box")
+    ax.set_aspect("equal", adjustable="datalim")
     ax.grid(True)
 
     return artist
@@ -484,7 +437,7 @@ def plot_prism_outline_xz(
 
     ax.set_xlabel(f"z [{unit}]")
     ax.set_ylabel(f"x [{unit}]")
-    ax.set_aspect("equal", adjustable="box")
+    ax.set_aspect("equal", adjustable="datalim")
     ax.grid(True)
 
     return artist

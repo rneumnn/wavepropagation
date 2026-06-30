@@ -101,11 +101,95 @@ def refract_rays(rays:RayBundle, normal:np.ndarray[float], n2:RefractiveIndexFun
 
     return out
 
-def reflect(direction, normal):
-    NotImplemented
-
-def reflect_through(direction, normal):
-    """ 
-    Simulates a reflecting element but mirrors the reflection vertically, so the ray continues in the same direction
+def reflect(direction: np.ndarray, normal: np.ndarray):
     """
-    NotImplemented
+    Vectorized reflection law.
+
+    Parameters
+    ----------
+    direction:
+        Incoming unit direction, shape (..., 3).
+
+    normal:
+        Surface normal, shape (..., 3).
+        The sign of the normal does not matter for reflection.
+
+    Returns
+    -------
+    reflected_direction:
+        Reflected unit direction, shape (..., 3).
+
+    valid:
+        Boolean mask, False where result is non-finite.
+    """
+    direction = normalize(direction)
+    normal = normalize(normal)
+
+    dot_dn = np.sum(direction * normal, axis=-1)
+
+    reflected_direction = direction - 2.0 * dot_dn[..., None] * normal
+    reflected_direction = normalize(reflected_direction)
+
+    valid = np.isfinite(reflected_direction).all(axis=-1)
+
+    return reflected_direction, valid
+
+def reflect_rays(
+    rays: RayBundle,
+    normal: np.ndarray,
+    phase_shift: float = 0.0,
+) -> RayBundle:
+    """
+    Convenience method for reflecting a RayBundle.
+
+    Parameters
+    ----------
+    rays:
+        RayBundle already located on the reflecting surface.
+
+    normal:
+        Normal vectors at ray positions, shape rays.positions.shape.
+
+    phase_shift:
+        Optional constant phase shift added on reflection.
+        Use np.pi if you want to model a simple pi phase flip.
+
+    Returns
+    -------
+    out:
+        Reflected RayBundle.
+    """
+    out = rays.copy()
+
+    new_dirs, refl_valid = reflect(
+        rays.directions,
+        normal,
+    )
+
+    valid = rays.valid & refl_valid
+
+    out.directions = np.where(
+        valid[..., None],
+        new_dirs,
+        out.directions,
+    )
+
+    out.valid &= valid
+
+    if phase_shift != 0.0:
+        out.phase[valid] += phase_shift
+
+    # n_medium does not change for ideal reflection.
+    out.n_medium = rays.n_medium
+
+    return out
+
+# def reflect_through(direction, normal):
+#     """ 
+#     Simulates a reflecting element but mirrors the reflection vertically, so the ray continues in the same direction
+#     """
+    
+#     direction = normalize(direction)
+#     normal = normalize(normal)
+
+#     angles_between = np.arccos(np.linalg.multi_dot(direction, normal))

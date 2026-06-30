@@ -5,7 +5,7 @@ import numpy as np
 from .materials.materialCore import RefractiveIndexFunction
 from .materials.materials import AIR
 from .spectralUtils import Spectrum
-from ..raytracing.backend.geometry import normalize, Plane, orient_normal_against_ray
+from ..raytracing.backend.geometry import normalize, Plane, orient_normal_against_ray, rotation_matrix_from_euler
 from scipy.constants import c
 from ..raytracing.backend.visualization import plot_surface_xz, plot_raybundle_history_xz, plot_raybundle_history_xz_by_wavelength
 
@@ -24,8 +24,10 @@ class element_base:
         self.center_position = center_position    #enables raytracing for element
         element_base.n_element += 1
         self._update_properties()
+        self.n_environment = n_environment
         if n_environment is None:
             self.n_environment = element_base.N_ENVIRONMENT_STANDARD
+
         return
     
     def __init_subclass__(cls, **kwargs):
@@ -710,170 +712,219 @@ class RayTraceResult:
 
 class Surface:
     """
-    Base class for geometric surfaces.
+    Base class for optical raytracing surfaces.
 
-    General surface representation:
-        local z = surface_function(x, y)
+    Coordinate convention
+    ---------------------
+    Every surface has a local coordinate system.
 
-    Coordinates are local to center_position.
+    Local surface equation:
+        z = surface_function(x, y)
+
+    Global embedding:
+        p_global = center_position + R @ p_local
+
+    In this implementation points are stored as row vectors (..., 3), therefore
+    the transformations are written as:
+
+        local  = (global - center_position) @ R
+        global = center_position + local @ R.T
+
+    Parameters
+    ----------
+    center_position:
+        Global 3D position of the local coordinate origin.
+
+    surface_function:
+        Local sag function z = f(x, y). Can be None for surfaces that implement
+        their own geometry.
+
+    aperture_radius:
+        Optional circular aperture radius in the local x-y plane.
+
+    rotation:
+        3x3 rotation matrix describing the orientation of the local surface
+        coordinate system in global coordinates.
+
+        If None, identity rotation is used.
     """
 
-    surface_counter = 0
+    _surface_counter = 0
 
-    def __init__(self, center_position=None, surface_function=None, aperture_radius = None):
+    def __init__(
+        self,
+        center_position=None,
+        surface_function=None,
+        aperture_radius=None,
+        rotation=None,
+        name=None,
+    ):
         if center_position is None:
             center_position = np.zeros(3, dtype=float)
 
+        if rotation is None:
+            rotation = np.eye(3, dtype=float)
+
         self.center_position = np.asarray(center_position, dtype=float)
         self.surface_function = surface_function
-
-        Surface._update_surface_counter()
-        self.surface_number = Surface.surface_counter
-        self.name = f"{type(self).__name__}_{self.surface_number}"
         self.aperture_radius = aperture_radius
 
+        self.rotation = np.asarray(rotation, dtype=float)
+        self.rotation_inv = self.rotation.T
+
+        if name is None:
+            Surface._surface_counter += 1
+            name = f"{self.__class__.__name__}_{Surface._surface_counter}"
+
+        self.name = name
+
     @classmethod
-    def _update_surface_counter(cls):
-        cls.surface_counter += 1
-
-    def z(self, x, y):
-        if self.surface_function is None:
-            raise NotImplementedError(
-                f"{type(self).__name__} has no surface_function."
-            )
-        return self.surface_function(x, y)
-
-    def point_at(self, x, y):
-        x = np.asarray(x, dtype=float)
-        y = np.asarray(y, dtype=float)
-        z = self.z(x, y)
-
-        local = np.stack([x, y, z], axis=-1)
-        return self.center_position + local
-
-    def gradient(self, x, y, h=1e-6):
-        dzdx = (self.z(x + h, y) - self.z(x - h, y)) / (2 * h)
-        dzdy = (self.z(x, y + h) - self.z(x, y - h)) / (2 * h)
-        return dzdx, dzdy
-
-    def normal_at(self, x, y):
-        dzdx, dzdy = self.gradient(x, y)
-        return normalize(np.array([-dzdx, -dzdy, 1.0], dtype=float))
-
-    def tangent_at(self, x, y):
-        return Plane(
-            position=self.point_at(x, y),
-            normal=self.normal_at(x, y),
-        )
-    
-    def normal_at_points(self, points: np.ndarray):
-        local = points - self.center_position
-
-        x = local[..., 0]
-        y = local[..., 1]
-
-        dzdx, dzdy = self.gradient(x, y)
-
-        normals = np.stack(
-            [-dzdx, -dzdy, np.ones_like(dzdx)],
-            axis=-1,
-        )
-
-        return normalize(normals)
-
-    def intersect(self, rays:RayBundle, t_min=1e-12, t_max=10.0, max_iter=30, tol=1e-12):
+    def from_euler_deg(
+        cls,
+        center_position=None,
+        rx_deg: float = 0.0,
+        ry_deg: float = 0.0,
+        rz_deg: float = 0.0,
+        order: str = "zyx",
+        **kwargs,
+    ):
         """
-        General numerical intersection with z = f(x, y).
-
-        This is a fallback. Specialized surfaces should override this.
+        Create a surface using Euler angles in degrees.
 
         Parameters
         ----------
-        rays:
-            RayBundle with positions (..., 3), directions (..., 3).
+        rx_deg, ry_deg, rz_deg:
+            Rotation angles around x, y, z in degrees.
+
+        order:
+            Euler composition order. Default "zyx" means:
+
+                R = Rz @ Ry @ Rx
+
+        kwargs:
+            Forwarded to the concrete surface constructor.
+        """
+        R = rotation_matrix_from_euler(
+            rx=np.deg2rad(rx_deg),
+            ry=np.deg2rad(ry_deg),
+            rz=np.deg2rad(rz_deg),
+            order=order,
+        )
+
+        return cls(
+            center_position=center_position,
+            rotation=R,
+            **kwargs,
+        )
+
+    def global_to_local_points(self, points: np.ndarray) -> np.ndarray:
+        """
+        Transform global points to local surface coordinates.
+
+        Parameters
+        ----------
+        points:
+            Global points, shape (..., 3).
 
         Returns
         -------
-        t:
-            Ray parameter distance to intersection, shape rays.shape.
-
-        valid:
-            Boolean mask of successful intersections.
+        local_points:
+            Local points, shape (..., 3).
         """
-        p = rays.positions - self.center_position
-        u = rays.directions
+        points = np.asarray(points, dtype=float)
+        return (points - self.center_position) @ self.rotation
 
-        # Define g(t) = ray_z(t) - surface_z(ray_x(t), ray_y(t)).
-        def g(t):
-            x = p[..., 0] + t * u[..., 0]
-            y = p[..., 1] + t * u[..., 1]
-            z_ray = p[..., 2] + t * u[..., 2]
-            z_surf = self.z(x, y)
-            return z_ray - z_surf
-
-        # Initial bracket.
-        a = np.full(rays.shape, t_min, dtype=float)
-        b = np.full(rays.shape, t_max, dtype=float)
-
-        ga = g(a)
-        gb = g(b)
-
-        valid = rays.valid & np.isfinite(ga) & np.isfinite(gb) & (ga * gb <= 0)
-
-        # Bisection.
-        for _ in range(max_iter):
-            m = 0.5 * (a + b)
-            gm = g(m)
-
-            left = ga * gm <= 0
-
-            b = np.where(valid & left, m, b)
-            gb = np.where(valid & left, gm, gb)
-
-            a = np.where(valid & ~left, m, a)
-            ga = np.where(valid & ~left, gm, ga)
-
-            if np.any(valid):
-                if np.max(np.abs(gm[valid])) < tol:
-                    break
-
-        t = 0.5 * (a + b)
-        valid &= np.abs(g(t)) < tol
-
-        return t, valid
-    
-    def get_intersection_points(self, rays:RayBundle, t_min=1e-12, t_max=10.0, max_iter=30, tol=1e-12):
+    def local_to_global_points(self, points: np.ndarray) -> np.ndarray:
         """
-        Gets the intersection points and normals with the given RayBundle.
+        Transform local surface points to global coordinates.
+        """
+        points = np.asarray(points, dtype=float)
+        return self.center_position + points @ self.rotation.T
+
+    def global_to_local_directions(self, directions: np.ndarray) -> np.ndarray:
+        """
+        Transform global direction vectors to local surface coordinates.
+
+        Directions are not translated.
+        """
+        directions = np.asarray(directions, dtype=float)
+        return directions @ self.rotation
+
+    def local_to_global_directions(self, directions: np.ndarray) -> np.ndarray:
+        """
+        Transform local direction vectors to global coordinates.
+
+        Directions are not translated.
+        """
+        directions = np.asarray(directions, dtype=float)
+        return directions @ self.rotation.T
+
+    def z(self, x, y):
+        """
+        Local sag function z = f(x, y).
+        """
+        if self.surface_function is None:
+            raise NotImplementedError(
+                f"{self.name}: no surface_function defined."
+            )
+
+        return self.surface_function(x, y)
+
+    def local_points_from_xy(self, x, y):
+        """
+        Evaluate the local surface point for local coordinates x, y.
+
+        Returns
+        -------
+        points:
+            Local points [x, y, z(x, y)], shape (..., 3).
+        """
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+
+        z = self.z(x, y)
+
+        return np.stack([x, y, z], axis=-1)
+
+    def global_points_from_xy(self, x, y):
+        """
+        Evaluate global surface points from local x, y coordinates.
+        """
+        local = self.local_points_from_xy(x, y)
+        return self.local_to_global_points(local)
+
+    def points_xz(self, x, y=0.0):
+        """
+        Evaluate global points on the local x-z meridional section.
+
+        This is useful for plotting rotated surfaces.
 
         Parameters
-        ---
-        rays: RayBundle
+        ----------
+        x:
+            Local x coordinates.
 
-        kwargs: see intersect()
-        
+        y:
+            Local y coordinate. Default 0.
+
         Returns
-        ---
-        points: (...,3) float - valid points of intersection with the surface
-
-        normals: (...,3) float - normal vectors at the intersction points, already oriented against the ray direction
-
-        valid: (...,1) bool - valid points of intersection
-
-        t: (...,1) float - t-parameter for intersection of each ray
+        -------
+        points:
+            Global surface points, shape (..., 3).
         """
-        t, valid = self.intersect(rays)
+        x = np.asarray(x, dtype=float)
+        y = np.full_like(x, y, dtype=float)
 
-        all_points = rays.evaluate(t)
-        points = all_points[valid]
+        return self.global_points_from_xy(x, y)
 
-        normals = self.normal_at_points(points)
-        directions = rays.directions[valid]
+    def aperture_mask_local_xy(self, x, y):
+        """
+        Check circular aperture in local x-y coordinates.
+        """
+        if self.aperture_radius is None:
+            return np.ones_like(np.asarray(x), dtype=bool)
 
-        normals = orient_normal_against_ray(directions, normals)
-
-        return points, normals, valid, t
-
+        return x**2 + y**2 <= self.aperture_radius**2
     
 
 class RayOpticalSystem:

@@ -293,3 +293,57 @@ def vector_from_angles(phi, theta) -> np.ndarray:
     z = np.cos(phi) * np.cos(theta)
 
     return np.array([x, y, z], dtype=float)
+
+
+def rotation_matrix_x(angle: float) -> np.ndarray:
+    c = np.cos(angle)
+    s = np.sin(angle)
+
+    return np.array([
+        [1.0, 0.0, 0.0],
+        [0.0, c, -s],
+        [0.0, s, c],
+    ], dtype=float)
+
+
+def rotation_matrix_y(angle: float) -> np.ndarray:
+    c = np.cos(angle)
+    s = np.sin(angle)
+
+    return np.array([
+        [c, 0.0, s],
+        [0.0, 1.0, 0.0],
+        [-s, 0.0, c],
+    ], dtype=float)
+
+
+def rotation_matrix_z(angle: float) -> np.ndarray:
+    c = np.cos(angle)
+    s = np.sin(angle)
+
+    return np.array([
+        [c, -s, 0.0],
+        [s, c, 0.0],
+        [0.0, 0.0, 1.0],
+    ], dtype=float)
+
+
+def rotation_matrix_from_euler(rx=0.0, ry=0.0, rz=0.0, order="zyx") -> np.ndarray:
+    """
+    Build rotation matrix from Euler angles.
+
+    Default order "zyx" means:
+        R = Rz @ Ry @ Rx
+    """
+    matrices = {
+        "x": rotation_matrix_x(rx),
+        "y": rotation_matrix_y(ry),
+        "z": rotation_matrix_z(rz),
+    }
+
+    R = np.eye(3)
+
+    for axis in order:
+        R = matrices[axis] @ R
+
+    return R
