@@ -17,6 +17,7 @@ class Spectrum:
     d_lambda: np.ndarray|None = None
     sampling_method: str = "unknown"
     _possible_methods = ("gaussian_lambda", "gaussian_omega", "unknown")
+    center_wavelength: float = None
 
     def __post_init__(self):
         if self.wavelengths.shape != self.omegas.shape or self.wavelengths.shape != self.weights_lambda.shape or self.wavelengths.shape != self.weights_omega.shape:
@@ -37,6 +38,10 @@ class Spectrum:
             return f"Spectrum with {len(self.omegas)} components, sampled using method: {self.sampling_method}" 
         else:
             return f"Spectrum with {len(self.wavelengths)} components, sampled using method: {self.sampling_method}" 
+    
+    @property
+    def omega0(self):
+        return 2*np.pi*c/self.center_wavelength
 
 @staticmethod
 def gaussian_spectrum_lambda(
@@ -81,6 +86,9 @@ def gaussian_spectrum_lambda(
             Same physical discrete energy weights, but associated with omega samples.
             For a non-uniform omega grid these are NOT just a Gaussian in omega.
     """
+    if num%2 == 0:
+        num += 1
+
     lambda0 = float(center_wavelength)
 
     sigma_lambda = fwhm / (2 * np.sqrt(2 * np.log(2)))
@@ -126,7 +134,8 @@ def gaussian_spectrum_lambda(
         weights_omega=weights_omega,
         d_lambda=d_lambda,
         d_omega=None,
-        sampling_method="gaussian_lambda"
+        sampling_method="gaussian_lambda",
+        center_wavelength=center_wavelength
     )
 
 @staticmethod
@@ -168,6 +177,8 @@ def gaussian_spectrum_omega(
             Same physical discrete energy weights, but associated with omega samples.
             For a non-uniform omega grid these are NOT just a Gaussian in omega.
     """
+    if num%2 == 0:
+        num += 1
     lambda0 = float(center_wavelength)
     omega0 = 2 * np.pi * c / lambda0
 
@@ -197,5 +208,6 @@ def gaussian_spectrum_omega(
         weights_omega=weights.copy(),
         d_omega=d_omega,
         d_lambda=None,
-        sampling_method="gaussian_omega"
+        sampling_method="gaussian_omega",
+        center_wavelength=center_wavelength
     )

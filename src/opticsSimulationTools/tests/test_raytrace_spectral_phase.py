@@ -3,7 +3,7 @@ from opticsSimulationTools.core.core_classes import RayBundle, RayTraceResult, R
 from opticsSimulationTools.elements import ThickRealLens, Prism, Screen, PlaneMirror, SphericalMirror, Axiparabola
 from opticsSimulationTools.core.spectralUtils import gaussian_spectrum_omega
 from opticsSimulationTools.core.materials.materials import FUSED_SILICA, AIR, BK7
-from opticsSimulationTools.raytracing.backend.visualization import plot_surface_xz, plot_raybundle_history_xz, plot_raybundle_history_xz_by_wavelength
+from opticsSimulationTools.raytracing.backend.visualization import plot_surface_xz, plot_raybundle_history_xz, plot_raybundle_history_xz_by_wavelength, plot_spectral_phase, plot_pulse_front_3d, plot_spectral_phase_against_radius
 from opticsSimulationTools.raytracing.backend import analysis, spatiotemporal
 import numpy as np
 from matplotlib import pyplot as plt
@@ -11,7 +11,7 @@ from matplotlib import pyplot as plt
 rmax = 5e-2
 central_wl = 800e-9
 n_rays = 1000
-n_wl = 3
+n_wl = 30
 spec = gaussian_spectrum_omega(central_wl, 40e-9, n_wl)
 rays = RayBundle.collimated_line_spectral(
     x = np.linspace(-rmax,rmax,n_rays),
@@ -42,7 +42,7 @@ axiparabola = Axiparabola.from_euler_deg(
 
 screen = Screen.FlatScreen((0,0,100e-2), aperture_radius=1)
 
-system = RayOpticalSystem([axiparabola, screen])
+system = RayOpticalSystem([glass, screen])
 
 fig, ax = plt.subplots()
 result = system.trace_and_plot_xz(
@@ -60,25 +60,45 @@ print(f"spectral phase{spectral_phase}")
 sorted_spectral_data = spatiotemporal.sorted_spectral_data(result.rays)
 print(f"sorted_spectral_data:\nomega:{sorted_spectral_data[0]}\nphase: {sorted_spectral_data[1]}\nvalid: {sorted_spectral_data[2]}")
 
-fit_manuel = spatiotemporal.fit_spectral_phase(sorted_spectral_data[0], sorted_spectral_data[1],sorted_spectral_data[2], sorted_spectral_data[3], order = 3, omega0=spatiotemporal.angular_frequencies_from_wavelengths(central_wl))
+fit_manuel = spatiotemporal.fit_spectral_phase(sorted_spectral_data[0], sorted_spectral_data[1],sorted_spectral_data[2], sorted_spectral_data[4], positions=rays.center_omega_postions, order = 3, omega0=spatiotemporal.angular_frequencies_from_wavelengths(central_wl))
 print(f"fit manuel: {fit_manuel}")
 
-spectral_phase_fit = spatiotemporal.spectral_phase_fit_from_rays(result.rays, 3, omega0=spatiotemporal.angular_frequencies_from_wavelengths(central_wl))
+spectral_phase_fit = spatiotemporal.spectral_phase_fit_from_rays(result.history[-2], 3, omega0=spatiotemporal.angular_frequencies_from_wavelengths(central_wl))
 print(f"spectral phase fit: {spectral_phase_fit}")
 
-st = spatiotemporal.spatiotemporal_summary(result.rays, phase_order=3)
+st = spatiotemporal.spatiotemporal_summary(result.history[-2], phase_order=3)
 print(f"spatiotemporal summary: {st}")
 
-
+print("phi0 max [rad]",np.max(st.phi0))
+print("phi0 min [rad]", np.min(st.phi0))
 print("mean GD [ps]:", np.nanmean(st.gd) * 1e12)
 print("mean GDD [fs²]:", np.nanmean(st.gdd) * 1e30)
 print("PFC [fs/mm²]:", st.pulse_front_fit.pfc_fs_per_mm2)
+print(st.relative_gd)
 ### all working
 
-print(result.element_history)
-print(result.surface_history)
+# print(result.element_history)
+# print(result.surface_history)
 
 st_dif = spatiotemporal.spectral_phase_fit_between_rays(result.history[1], result.history[-2], order = 3, omega0=spatiotemporal.angular_frequencies_from_wavelengths(central_wl))
 
 print("mean GD [ps]:", np.nanmean(st_dif.gd) * 1e12)
 print("mean GDD [fs²]:", np.nanmean(st_dif.gdd) * 1e30)
+
+# print(st.phase_fit.coefficients)
+
+fig, ax = plt.subplots()
+plot_spectral_phase(st.phase_fit.omegas, st.phase_fit.coefficients, ax = ax, ray_index_flat=[10,100, 500, 900])
+plt.show()
+
+fig, ax = plt.subplots(1,4)
+plot_spectral_phase_against_radius(st, ax[0], phase_parameter="phi0")
+plot_spectral_phase_against_radius(st, ax[1], phase_parameter="gd", c = "r")
+plot_spectral_phase_against_radius(st, ax[2], phase_parameter="gdd", c = "lime")
+plot_spectral_phase_against_radius(st, ax[3], phase_parameter="tod", c = "pink")
+plt.show()
+
+fit = st.pulse_front_fit
+fig, ax = plt.subplots(subplot_kw={"projection": "3d"})
+plot_pulse_front_3d(st.pulse_front_fit, ax)
+plt.show()

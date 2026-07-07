@@ -98,6 +98,7 @@ def refract_rays(rays:RayBundle, normal:np.ndarray[float], n2:RefractiveIndexFun
 
     out.valid &= valid
     out.n_medium = n2
+    out.action = "refract"
 
     return out
 
@@ -225,6 +226,9 @@ def reflect_rays(
         out.phase[valid] += phase_shift
 
     out.n_medium = rays.n_medium
+    out.action = "reflect"
+    if unfold:
+        out.action = "reflect_unfolded"
 
     return out
 

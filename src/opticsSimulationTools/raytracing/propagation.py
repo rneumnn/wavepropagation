@@ -9,5 +9,6 @@ def propagate_to_surface(rays: RayBundle, surface: Surface):
     out.positions[~valid] = rays.positions[~valid]
     out.valid &= valid
     out.surface = surface
+    out.action ="propergate"
 
     return out

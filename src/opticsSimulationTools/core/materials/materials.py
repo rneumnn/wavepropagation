@@ -21,7 +21,7 @@ FUSED_SILICA = Material.sellmeier(
 AIR = Material.constant(1.0, name="Air")
 
 BK7 = Material.sellmeier(
-    name="N-BK7",
+    name="BK7",
     B=[
         1.03961212,
         0.231792344,
@@ -34,3 +34,25 @@ BK7 = Material.sellmeier(
     ],
 )
 
+N_BK7_Sellmeier = {
+    "B1": 1.03961212,
+    "B2": 0.231792344,
+    "B3": 1.01046945,
+    "C1": 0.00600069867*1e-12,
+    "C2": 0.0200179144*1e-12,
+    "C3": 103.560653*1e-12,
+}
+
+N_BK7 = Material.sellmeier_from_dict("N-BK7", N_BK7_Sellmeier)
+
+N_SK2_Sellmeier = {
+    "B1": 1.28189012, "B2": 0.257738258, "B3": 0.96818604,
+    "C1": 0.0072719164*1e-12, "C2": 0.0242823527*1e-12, "C3": 110.377773*1e-12,
+}
+N_SK2 = Material.sellmeier_from_dict("N-SK2", N_SK2_Sellmeier)
+
+N_SF5_Sellmeier = {
+    "B1": 1.52481889, "B2": 0.187085527, "B3": 1.42729015,
+    "C1": 0.011254756*1e-12, "C2": 0.0588995392*1e-12, "C3": 129.141675*1e-12,
+}
+N_SF5 = Material.sellmeier_from_dict("N-SF5", N_SF5_Sellmeier)

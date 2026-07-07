@@ -1,6 +1,8 @@
 import numpy as np
-from ...core.vizualizing import wavelength_to_rgb, wavelength_to_falsecolor, scale_map
+from ...core.vizualizing import wavelength_to_rgb, wavelength_to_falsecolor, spatial_scale_map, temporal_scale_map
 from matplotlib import colormaps
+from matplotlib.axes import Axes
+
 
 def plot_surface_xz(
     surface,
@@ -10,7 +12,7 @@ def plot_surface_xz(
     unit: str = "mm",
     **kwargs,
 ):
-    scale = scale_map[unit]
+    scale = spatial_scale_map[unit]
 
     if xlim is None:
         aperture = getattr(surface, "aperture_radius", None)
@@ -50,7 +52,7 @@ def plot_surface_yz(
     **kwargs,
 ):
 
-    scale = scale_map[unit]
+    scale = spatial_scale_map[unit]
 
     if ylim is None:
         aperture = getattr(surface, "aperture_radius", None)
@@ -119,18 +121,18 @@ def plot_raybundle_history_xz(
     If neither wavelength_index nor wavelength is given, wavelength_index=0 is used
     for spectral bundles.
     """
-    if unit not in scale_map:
+    if unit not in spatial_scale_map:
         raise ValueError(f"Unsupported unit: {unit}")
 
-    scale = scale_map[unit]
+    scale = spatial_scale_map[unit]
 
     if len(history) == 0:
         raise ValueError("history is empty.")
 
-    if unit not in scale_map:
+    if unit not in spatial_scale_map:
         raise ValueError(f"Unsupported unit: {unit}")
 
-    scale = scale_map[unit]
+    scale = spatial_scale_map[unit]
 
     # Stack positions:
     # monochromatic: (n_steps, N_rays, 3)
@@ -248,7 +250,7 @@ def pick_color(wavelength, wavelengths, color_style):
         if color_style == "rgb":
             color = wavelength_to_rgb(wavelength)
         elif color_style in colormaps.keys():
-            print([k for k in colormaps.keys()])
+            #print([k for k in colormaps.keys()])
             color = wavelength_to_falsecolor(
                 wavelength,
                 wavelengths.min(),
@@ -333,7 +335,7 @@ def plot_lens_outline_xz(
     own points_xz() method, so rotated surfaces are supported.
     """
 
-    scale = scale_map[unit]
+    scale = spatial_scale_map[unit]
 
     if xlim is None:
         a1 = getattr(surface1, "aperture_radius", None)
@@ -450,7 +452,7 @@ def plot_prism_outline_xz(
     fill_color = "cyan",
     **kwargs,
 ):
-    scale = scale_map[unit]
+    scale = spatial_scale_map[unit]
 
 
     
@@ -517,14 +519,7 @@ def plot_lens_outline_yz(
     fill_color: str = "cyan",
     **kwargs,
 ):
-    scale_map = {
-        "m": 1.0,
-        "mm": 1e3,
-        "um": 1e6,
-        "µm": 1e6,
-    }
-
-    scale = scale_map[unit]
+    scale = spatial_scale_map[unit]
 
     if ylim is None:
         a1 = getattr(surface1, "aperture_radius", None)
@@ -592,3 +587,272 @@ def plot_lens_outline_yz(
     ax.grid(True)
 
     return artists
+
+
+def plot_focal_trajectory(result: FocalVelocityResult, ax, unit="mm"):
+    scale = spatial_scale_map[unit]
+
+    r = result.radius
+    z = result.z_focus
+
+    if result.wavelength is None:
+        ax.plot(r * scale, z * scale)
+    else:
+        for i, wl in enumerate(result.wavelength):
+            ax.plot(
+                r[i] * scale,
+                z[i] * scale,
+                label=f"{wl * 1e9:.1f} nm",
+            )
+
+        ax.legend()
+
+    ax.set_xlabel(f"Input radius [{unit}]")
+    ax.set_ylabel(f"Focus z [{unit}]")
+    ax.grid(True)
+
+    return ax
+
+def plot_focal_velocity(result: FocalVelocityResult, ax, velocity_unit="c", radius_unit="mm"):
+    r_scale = spatial_scale_map[radius_unit]
+
+    r = result.radius
+
+    if velocity_unit == "c":
+        v = result.dz_dt_over_c
+        ylabel = "Focal velocity / c"
+    else:
+        v = result.dz_dt
+        ylabel = "Focal velocity [m/s]"
+
+    if result.wavelength is None:
+        ax.plot(r * r_scale, v)
+    else:
+        for i, wl in enumerate(result.wavelength):
+            ax.plot(
+                r[i] * r_scale,
+                v[i],
+                label=f"{wl * 1e9:.1f} nm",
+            )
+
+        ax.legend()
+
+    ax.set_xlabel(f"Input radius [{radius_unit}]")
+    ax.set_ylabel(ylabel)
+    ax.grid(True)
+
+    return ax
+
+def plot_focus_time(result: FocalVelocityResult, ax, radius_unit="mm", time_unit="fs"):
+    r_scale = spatial_scale_map[radius_unit]
+    t_scale = temporal_scale_map[time_unit]
+
+    r = result.radius
+    t = result.t_focus
+
+    if result.wavelength is None:
+        ax.plot(r * r_scale, t * t_scale)
+    else:
+        for i, wl in enumerate(result.wavelength):
+            ax.plot(
+                r[i] * r_scale,
+                t[i] * t_scale,
+                label=f"{wl * 1e9:.1f} nm",
+            )
+
+        ax.legend()
+
+    ax.set_xlabel(f"Input radius [{radius_unit}]")
+    ax.set_ylabel(f"Focus time [{time_unit}]")
+    ax.grid(True)
+
+    return ax
+
+def plot_longitudinal_intensity(
+    profile: IntensityProfile,
+    ax,
+    z_unit: str = "mm",
+    color_style = "rgb",
+):
+    scale = spatial_scale_map[z_unit]
+
+    z = profile.z * scale
+    I = profile.intensity
+
+    if profile.wavelength is None:
+        ax.plot(z, I)
+    else:
+        for i, wl in enumerate(profile.wavelength):
+            ax.plot(
+                z,
+                I[i],
+                label=f"{wl * 1e9:.1f} nm",
+                color = pick_color(wl, wavelengths=profile.wavelength,color_style=color_style)
+            )
+        ax.legend()
+
+    ax.set_xlabel(f"z [{z_unit}]")
+    ax.set_ylabel("Normalized intensity")
+    ax.grid(True)
+
+    return ax
+
+def plot_intensity_2d(
+    profile: IntensityProfile,
+    ax,
+    unit: str = "mm",
+    wavelength_index: int = 0,
+):
+    scale = spatial_scale_map[unit]
+
+    x = profile.x * scale
+    y = profile.y * scale
+
+    if profile.wavelength is None:
+        I = profile.intensity
+    else:
+        I = profile.intensity[wavelength_index]
+
+    extent = [
+        x[0],
+        x[-1],
+        y[0],
+        y[-1],
+    ]
+
+    im = ax.imshow(
+        I,
+        extent=extent,
+        origin="lower",
+        aspect="auto",
+        cmap="magma",
+    )
+
+    ax.set_xlabel(f"x [{unit}]")
+    ax.set_ylabel(f"y [{unit}]")
+    ax.figure.colorbar(im, ax=ax, label="Normalized intensity")
+
+    return ax
+
+
+
+def plot_pulse_front_3d(
+    fit: PulseFrontFit,
+    ax: Axes=None,
+    xlim=None,
+    ylim=None,
+    n: int = 150,
+    xy_unit: str = "mm",
+    tau_unit: str = "fs",
+    include_terms: tuple[str, ...] | None = None,
+):
+    """
+    Plot fitted pulse-front delay as a 3D surface.
+
+    Parameters
+    ----------
+    fit:
+        PulseFrontFit object.
+
+    xlim, ylim:
+        Limits in meters.
+
+    n:
+        Grid size.
+
+    xy_unit:
+        "m", "mm", or "um".
+
+    tau_unit:
+        "s", "fs", or "ps".
+
+    include_terms:
+        Optional subset of fitted terms.
+    """
+    if xlim is None:
+        if fit.x is None:
+            raise ValueError("xlim must be given if fit.x is not stored.")
+        xlim = (np.nanmin(fit.x), np.nanmax(fit.x))
+
+    if ylim is None:
+        if fit.y is None:
+            raise ValueError("ylim must be given if fit.y is not stored.")
+        ylim = xlim#(np.nanmin(fit.y), np.nanmax(fit.y))
+
+    x = np.linspace(xlim[0], xlim[1], n)
+    y = np.linspace(ylim[0], ylim[1], n)
+    plot_mask = np.asarray(np.where(x**2+y**2 < np.max([np.max(x),np.max(y)])**2, 1, 0), dtype=bool)
+
+    X, Y = np.meshgrid(x, y, indexing="xy")
+    Tau = fit.evaluate(X, Y, include_terms=include_terms)
+
+    xy_scale = spatial_scale_map[xy_unit]
+
+    tau_scale = temporal_scale_map[tau_unit]
+
+    if ax is None:
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection="3d")
+    
+    print("fit.x:", None if fit.x is None else fit.x.shape)
+    print("fit.y:", None if fit.y is None else fit.y.shape)
+    print("xlim:", xlim)
+    print("ylim:", ylim)
+    print("X shape:", X.shape)
+    print("Y shape:", Y.shape)
+    print("Tau shape:", Tau.shape)
+    print("Tau finite:", np.isfinite(Tau).sum(), "/", Tau.size)
+    print("Tau min/max [s]:", np.nanmin(Tau), np.nanmax(Tau))
+    print("Tau min/max [fs]:", np.nanmin(Tau) * 1e15, np.nanmax(Tau) * 1e15)
+
+    ax.plot_surface(
+        X[plot_mask] * xy_scale,
+        Y[plot_mask] * xy_scale,
+        Tau[plot_mask] * tau_scale,
+        linewidth=0,
+        antialiased=True,
+        alpha=0.85,
+        cmap = "coolwarm"
+    )   
+    ax.set_box_aspect((1, 1, 0.3))
+    ax.set_xlabel(f"x [{xy_unit}]")
+    ax.set_ylabel(f"y [{xy_unit}]")
+    ax.set_zlabel(f"delay [{tau_unit}]")
+
+    return ax
+
+def plot_spectral_phase(omega, coefficients, ray_index_flat, ax, unit="rad/s"):
+    styles = ["-", "--", ":","-."]
+    coefficients = coefficients[...,ray_index_flat].T
+    for coeffs in coefficients:
+        for n, coeff in enumerate(coeffs[::-1]):
+            ax.plot(omega, coeff*omega**n, label=f"order={n}, coeff={coeff:.3e}", ls = styles[n])
+    ax.legend()
+    ax.set_xlabel(f"omega [{unit}]")
+    ax.set_ylabel("Spectral phase [rad]")
+    ax.grid(True)
+
+    return ax
+
+def plot_spectral_phase_against_radius(st:SpectralPhaseFit, ax:Axes, spatial_unit = "mm", time_unit = "fs", phase_parameter = "gd", **plotting_kwargs):
+    plotable_parameters ={
+        'phi0': f"rad",
+        'gd': f"{time_unit}",
+        'gdd': f"{time_unit}^2/rad",
+        'tod': f"{time_unit}^3/rad^2",
+        'relative_gd':f"{time_unit}",
+    }
+    time_scale = temporal_scale_map[time_unit]
+    spatial_scale = spatial_scale_map[spatial_unit]
+    radii = np.linalg.norm(st.positions[...,0:2], axis=1)
+    print(radii)
+    ordered_indx = np.argsort(radii)
+    ax.scatter(radii[ordered_indx]*spatial_scale, getattr(st, phase_parameter)[ordered_indx]*time_scale, label = f"{phase_parameter}", **plotting_kwargs)
+    ax.set_xlabel(f"ray radius (center frequency) [{spatial_unit}]")
+    ax.set_ylabel(f"{phase_parameter} [{plotable_parameters[phase_parameter]}]")
+    ax.legend()
+
+
+
+    
+  

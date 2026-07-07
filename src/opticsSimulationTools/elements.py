@@ -3,7 +3,7 @@ import numpy as np
 from scipy.constants import c, pi
 from .core.materials.materialCore import RefractiveIndexFunction
 from .core.materials.materials import AIR
-from .core.core_classes import RayBundle, RayTraceResult, element_base
+from .core.core_classes import RayBundle, RayTraceResult, element_base, Surface
 from .raytracing.backend.calculations import refract_rays, reflect_rays
 from .raytracing.propagation import propagate_to_surface
 from .raytracing.backend.surfaces import SphericalSagSurface, PlaneSurface, FreeFormSurface, SurfaceSeparationCheck
@@ -1861,7 +1861,7 @@ class Mirror(element_base):
     ):
         super().__init__(radial_symmetric=False, center_position=center_position)
 
-        self.surface = surface
+        self.surface: Surface = surface
         self.phase_shift = float(phase_shift)
         self.apply_aperture = bool(apply_aperture)
         self.unfold = bool(unfold)
@@ -2140,6 +2140,9 @@ class Axiparabola(Mirror):
         s_ax = lambda x,y: -(np.sqrt(x**2 + y**2)**2/4/F0 \
                 - L * np.sqrt(x**2 + y**2)**4 / (8*F0**2*RMAX**2) \
                 + L * np.sqrt(x**2 + y**2)**6 * (np.sqrt(x**2 + y**2)**2 + 8*F0*L) / (96*F0**4*RMAX **4))
+        
+
+        s_ax = lambda x,y: -RMAX**2/(4*L)*np.log(1+(L/F0)*(np.sqrt(x**2 + y**2)/RMAX)**2)
         return s_ax
     
     @classmethod

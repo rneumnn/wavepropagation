@@ -1,13 +1,14 @@
 import numpy as np
 from matplotlib import pyplot as plt
 
-scale_map = {
+spatial_scale_map = {
         "m": 1.0,
         "mm": 1e3,
         "um": 1e6,
         "µm": 1e6,
     }
 
+temporal_scale_map = {"s": 1.0, "fs": 1e15, "ps": 1e12}
 
 
 def wavelength_to_rgb(wavelength: float) -> np.ndarray: 

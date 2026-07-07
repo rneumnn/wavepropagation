@@ -70,6 +70,22 @@ class Material:
             sellmeier_coefficients=(B_arr, C_arr),
         )
     
+    @classmethod
+    def sellmeier_from_dict(
+        cls,
+        name: str,
+        dicttionary:dict,
+    ) -> "Material":
+        b_keys = [k for k in dicttionary.keys() if ("B" in k) or ("b" in k)]
+        c_keys = [k for k in dicttionary.keys() if ("C" in k) or ("c" in k)]
+        B = [dicttionary[key] for key in b_keys]
+        C = [dicttionary[key] for key in c_keys]
+        cls.sellmeier(
+            name = name,
+            B = B,
+            C = C,
+        )
+    
 
     def v_number(self, center_wl: float, wl_short: float, wl_long: float)-> float:
         return (self.n(center_wl)-1) / (self.n(wl_short)-self.n(wl_long))

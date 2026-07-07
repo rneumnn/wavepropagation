@@ -7,12 +7,22 @@ from dataclasses import dataclass
 
 @dataclass
 class SpectralPhaseFit:
+
+    """
+    omega0: float
+    coefficients: ndarray[float] shape(n_rays, fit_order,) - phase fit coefficients in descending order (as expected by numpy)
+    omegas: np.ndarray[float] - omegas used for the fit
+    phi0, gd, gdd, tod: ndarray[float] - spectral phase parameter aquired from the coefficients
+    positions: ndarray shape(n_rays,3) - position vectors of the rays used for fitting
+    """
     omega0: float
     coefficients: np.ndarray
+    omegas: np.ndarray
     phi0: np.ndarray
     gd: np.ndarray | None = None
     gdd: np.ndarray | None = None
     tod: np.ndarray | None = None
+    positions: np.ndarray | None = None
 
     @property
     def gd_fs(self):
@@ -39,10 +49,8 @@ class PulseFrontFit:
     tilt_x: float
     tilt_y: float
 
-    # Basic radial model
     pfc: float | None = None
 
-    # Astigmatic model
     curv_xx: float | None = None
     curv_yy: float | None = None
     curv_xy: float | None = None
@@ -51,39 +59,96 @@ class PulseFrontFit:
     rank: int | None = None
     singular_values: np.ndarray | None = None
     n_points: int = 0
+    coefficients: np.ndarray | None = None
+    x: np.ndarray | None = None
+    y: np.ndarray | None = None
 
-    @property
-    def tilt_x_fs_per_mm(self):
-        return self.tilt_x * 1e12
-
-    @property
-    def tilt_y_fs_per_mm(self):
-        return self.tilt_y * 1e12
-
-    @property
-    def pfc_fs_per_mm2(self):
-        if self.pfc is None:
-            return None
-        return self.pfc * 1e9
-
-    @property
-    def curv_xx_fs_per_mm2(self):
-        if self.curv_xx is None:
-            return None
-        return self.curv_xx * 1e9
-
-    @property
+    @property 
+    def tilt_x_fs_per_mm(self): 
+        return self.tilt_x * 1e12 
+    @property 
+    def tilt_y_fs_per_mm(self): 
+        return self.tilt_y * 1e12 
+    @property 
+    def pfc_fs_per_mm2(self): 
+        if self.pfc is None: 
+            return None 
+        return self.pfc * 1e9 
+    @property 
+    def curv_xx_fs_per_mm2(self): 
+        if self.curv_xx is None: 
+            return None 
+        return self.curv_xx * 1e9 
+    @property 
     def curv_yy_fs_per_mm2(self):
-        if self.curv_yy is None:
-            return None
-        return self.curv_yy * 1e9
-
-    @property
-    def curv_xy_fs_per_mm2(self):
-        if self.curv_xy is None:
-            return None
+        if self.curv_yy is None: 
+            return None 
+        return self.curv_yy * 1e9 
+    @property 
+    def curv_xy_fs_per_mm2(self): 
+        if self.curv_xy is None: 
+            return None 
         return self.curv_xy * 1e9
 
+    def evaluate(self, x, y, include_terms: tuple[str, ...] | None = None):
+        """
+        Evaluate fitted pulse-front delay.
+
+        Parameters
+        ----------
+        x, y:
+            Coordinates in meters.
+
+        include_terms:
+            Optional selection of terms:
+                ("tau0", "tilt_x", "tilt_y", "pfc")
+                ("tau0", "tilt_x", "tilt_y", "curv_xx", "curv_yy", "curv_xy")
+
+            If None, all available terms are included.
+
+        Returns
+        -------
+        tau:
+            Delay in seconds.
+        """
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+
+        if include_terms is None:
+            include_terms = (
+                "tau0",
+                "tilt_x",
+                "tilt_y",
+                "pfc",
+                "curv_xx",
+                "curv_yy",
+                "curv_xy",
+            )
+
+        tau = np.zeros(np.broadcast_shapes(x.shape, y.shape), dtype=float)
+
+        if "tau0" in include_terms:
+            tau = tau + self.tau0
+
+        if "tilt_x" in include_terms:
+            tau = tau + self.tilt_x * x
+
+        if "tilt_y" in include_terms:
+            tau = tau + self.tilt_y * y
+
+        if "pfc" in include_terms and self.pfc is not None:
+            tau = tau + self.pfc * (x**2 + y**2)
+
+        if "curv_xx" in include_terms and self.curv_xx is not None:
+            tau = tau + self.curv_xx * x**2
+
+        if "curv_yy" in include_terms and self.curv_yy is not None:
+            tau = tau + self.curv_yy * y**2
+
+        if "curv_xy" in include_terms and self.curv_xy is not None:
+            tau = tau + self.curv_xy * x * y
+
+        return tau
 
 @dataclass
 class SpatiotemporalSummary:
@@ -92,7 +157,11 @@ class SpatiotemporalSummary:
     positions: np.ndarray
     valid: np.ndarray
     pulse_front_fit: PulseFrontFit
+    omega0: float
 
+    @property
+    def phi0(self):
+        return self.phase_fit.phi0
     @property
     def gd(self):
         return self.phase_fit.gd
@@ -184,7 +253,7 @@ def sorted_spectral_data(rays: RayBundle, unwrap: bool = False):
 
     idx = np.argsort(omega)
 
-    return omega[idx], phase[idx], rays.weights[idx], valid[idx]
+    return omega[idx], phase[idx], rays.weights[idx], rays.positions[idx,...], valid[idx]
 
 
 def fit_spectral_phase(
@@ -195,6 +264,7 @@ def fit_spectral_phase(
     order: int = 2,
     omega0: float | None = None,
     omega_scale: float = 1e15,
+    positions = None    #positions of rays with center wavelength
 ) -> SpectralPhaseFit:
     omega = np.asarray(omega, dtype=float)
     phase = np.asarray(phase, dtype=float)
@@ -210,6 +280,7 @@ def fit_spectral_phase(
     if omega0 is None:
         omega0 = float(np.mean(omega))
 
+
     # Wichtig: dimensionslose, numerisch gut konditionierte Fitvariable
     x = (omega - omega0) / omega_scale
 
@@ -217,6 +288,9 @@ def fit_spectral_phase(
         valid = np.isfinite(phase)
     else:
         valid = np.asarray(valid, dtype=bool) & np.isfinite(phase)
+    
+    if positions is not None:
+        positions = positions[valid[valid.shape[0]//2,...]]
 
     coeffs_scaled = np.full((order + 1, n_rays), np.nan, dtype=float)
 
@@ -227,9 +301,10 @@ def fit_spectral_phase(
             continue
 
         c_desc = np.polyfit(x[mask], phase[mask, j], deg=order, w=weights[mask])
-        coeffs_scaled[:, j] = c_desc[::-1]
+        coeffs_scaled[:, j] = c_desc
 
-    phi0 = coeffs_scaled[0]
+    phi0 = coeffs_scaled[-1]
+    omega_scale_matrix = np.array([omega_scale**(i+1) for i in range(order+1)[::-1]])
 
     gd = None
     gdd = None
@@ -237,23 +312,25 @@ def fit_spectral_phase(
 
     if order >= 1:
         # dphi/domega = dphi/dx * dx/domega
-        gd = coeffs_scaled[1] / omega_scale
+        gd = coeffs_scaled[-2] / omega_scale
 
     if order >= 2:
         # d²phi/domega² = 2*c2 / omega_scale²
-        gdd = 2.0 * coeffs_scaled[2] / omega_scale**2
+        gdd = 2.0 * coeffs_scaled[-3] / omega_scale**2
 
     if order >= 3:
         # d³phi/domega³ = 6*c3 / omega_scale³
-        tod = 6.0 * coeffs_scaled[3] / omega_scale**3
+        tod = 6.0 * coeffs_scaled[-4] / omega_scale**3
 
     return SpectralPhaseFit(
         omega0=omega0,
-        coefficients=coeffs_scaled,
+        coefficients=coeffs_scaled/omega_scale_matrix[:, None],
+        omegas = omega-omega0,
         phi0=phi0,
         gd=gd,
         gdd=gdd,
         tod=tod,
+        positions=positions #spectrally sorted positions
     )
 
 
@@ -270,10 +347,11 @@ def spectral_phase_fit_from_rays(
     -------
     SpectralPhaseFit
     """
-    omega, phase, weights, valid  = sorted_spectral_data(rays, unwrap=unwrap)
+    omega, phase, weights, positions_sorted, valid  = sorted_spectral_data(rays, unwrap=unwrap)
 
     phase_flat = phase.reshape(phase.shape[0], -1)
     valid_flat = valid.reshape(valid.shape[0], -1)
+    positions = rays.positions[rays.index_omega0,...] #positions of rays with omega0    #positions_sorted.reshape(rays.positions.shape[0], -1, 3)
 
     fit = fit_spectral_phase(
         omega=omega,
@@ -282,6 +360,7 @@ def spectral_phase_fit_from_rays(
         valid=valid_flat,
         order=order,
         omega0=omega0,
+        positions=positions
     )
 
     ray_shape = rays.phase.shape[1:]
@@ -360,6 +439,7 @@ def spectral_phase_fit_between_rays(
 
     phase_flat = phase.reshape(phase.shape[0], -1)
     valid_flat = valid.reshape(valid.shape[0], -1)
+    positions = rays_after.center_omega_postions
 
     fit = fit_spectral_phase(
         omega=omega,
@@ -368,6 +448,7 @@ def spectral_phase_fit_between_rays(
         valid=valid_flat,
         order=order,
         omega0=omega0,
+        positions=positions
     )
 
     ray_shape = phase.shape[1:]
@@ -426,10 +507,11 @@ def relative_group_delay_to_nearest_axis(rays: RayBundle, gd):
     Uses final ray positions averaged over wavelength if spectral.
     """
     gd = np.asarray(gd, dtype=float)
+    _, _,_, _, valid = sorted_spectral_data(rays)
 
-    if is_spectral_bundle(rays):
-        pos = np.nanmean(rays.positions, axis=0)
-        valid = np.any(rays.valid, axis=0)
+    if is_spectral_bundle(rays): # position of omega0 rays
+        pos = rays.positions[rays.index_omega0,...]
+        valid = np.any(valid, axis=0)
     else:
         pos = rays.positions
         valid = rays.valid
@@ -529,6 +611,10 @@ def fit_pulse_front_quadratic(
             rank=int(rank),
             singular_values=singular,
             n_points=int(np.count_nonzero(mask)),
+            coefficients = coeff,
+            x = x[mask],
+            y = y[mask]
+
         )
 
     else:
@@ -556,6 +642,9 @@ def fit_pulse_front_quadratic(
             rank=int(rank),
             singular_values=singular,
             n_points=int(np.count_nonzero(mask)),
+            coefficients=coeff,
+            x = x[mask],
+            y = y[mask]
         )
     
 
@@ -587,12 +676,15 @@ def spatiotemporal_summary(
     else:
         rel_gd = gd - np.nanmean(gd)
 
-    positions = np.nanmean(rays.positions, axis=0)
+    if not (rays.omega0 in rays.omega):
+        raise ValueError("Omega_0 not in rays.omega")
+    
+    center_omega_positions = rays.positions[rays.index_omega0,...]
 
     valid = np.any(rays.valid, axis=0) & np.isfinite(rel_gd)
 
     pulse_front_fit = fit_pulse_front_quadratic(
-        positions=positions,
+        positions=center_omega_positions,
         delay=rel_gd,
         valid=valid,
         include_astigmatism=include_astigmatism,
@@ -601,9 +693,10 @@ def spatiotemporal_summary(
     return SpatiotemporalSummary(
         phase_fit=fit,
         relative_gd=rel_gd,
-        positions=positions,
+        positions=fit.positions,
         valid=valid,
         pulse_front_fit=pulse_front_fit,
+        omega0=fit.omega0,
     )
 
 

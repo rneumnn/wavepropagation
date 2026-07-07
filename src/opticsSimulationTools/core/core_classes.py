@@ -150,6 +150,8 @@ class RayBundle:
     n_medium: RefractiveIndexFunction = AIR.n_function
     last_element: element_base = None
     surface: Surface = None
+    spectrum: Spectrum = None
+    action: str = None
 
     def __post_init__(self):
         if type(self.wavelength) == float: self.wavelength = [self.wavelength]
@@ -195,7 +197,9 @@ class RayBundle:
             valid=self.valid.copy(),
             n_medium=self.n_medium,
             surface = self.surface,
-            last_element= self.last_element
+            last_element= self.last_element,
+            spectrum=self.spectrum,
+            action=self.action,
         )
 
     @property
@@ -222,6 +226,33 @@ class RayBundle:
     def phi(self):
         return np.arctan2(self.positions[..., 1], self.positions[..., 0])
     
+    @property
+    def is_spectral(self):
+        if self.spectrum is None:
+            return False
+        return True
+    
+    @property
+    def omega0(self):
+        if self.is_spectral:
+            return self.spectrum.omega0
+        else:
+            return self.omega
+    
+    @property
+    def index_omega0(self):
+        if self.is_spectral:
+            if self.omega0 in self.omega:
+                return np.argwhere(self.omega == self.omega0)[0,0]
+        return None
+    
+    @property
+    def center_omega_postions(self):
+        if self.is_spectral:
+            return self.positions[self.index_omega0,...]
+        return None
+    
+
     def to_ray_shape(self, value):
         """
         Broadcast scalar / spectral value to rays.shape.
@@ -238,6 +269,25 @@ class RayBundle:
         spectral polar rays:
             rays.shape == (N_lambda, N_phi, N_r)
             value.shape == (N_lambda, 1, 1) -> broadcasts to (N_lambda, N_phi, N_r)
+        """
+        value = np.asarray(value, dtype=float)
+
+        if value.shape == ():
+            return value
+
+        return np.broadcast_to(value, self.shape)
+    
+    def to_spectral_shape(self, value):
+        """
+        Broadcast scalar / spectral value to spectral shape.
+
+        Examples
+        --------
+        monochromatic:
+            value.shape == () -> scalar
+        spectral line rays:
+            rays.shape == (N_lambda, N_rays)
+            value.shape == (N_lambda*N_rays, 1) -> broadcasts to (N_lambda, N_rays)
         """
         value = np.asarray(value, dtype=float)
 
@@ -271,6 +321,65 @@ class RayBundle:
 
         return out
     
+    def parameter_to_closest_z_axis(self, atol: float = 1e-15, forward_only: bool = False):
+        """
+        Compute the ray parameter t where each ray is closest to the global z-axis.
+
+        This does not require an exact intersection with the z-axis.
+
+        The minimized quantity is:
+            r²(t) = x(t)² + y(t)²
+
+        Returns
+        -------
+        t:
+            Parameter of closest approach to z-axis, shape rays.shape.
+
+        valid:
+            Boolean mask.
+        """
+        p = self.positions
+        d = self.directions
+
+        x0 = p[..., 0]
+        y0 = p[..., 1]
+
+        dx = d[..., 0]
+        dy = d[..., 1]
+
+        denom = dx**2 + dy**2
+
+        valid = self.valid & (denom > atol)
+
+        t = -(x0 * dx + y0 * dy) / np.where(denom > atol, denom, np.nan)
+
+        if forward_only:
+            valid &= t >= 0.0
+
+        t = np.where(valid, t, np.nan)
+
+        return t, valid
+
+    def points_closest_to_z(self, atol: float = 1e-15, forward_only: bool = False):
+        """
+        Compute the points on each ray that are closest to the global z-axis.
+
+        Returns
+        -------
+        points:
+            Points of closest approach to z-axis, shape rays.shape + (3,).
+
+        t:
+            Parameter of closest approach to z-axis, shape rays.shape.
+
+        valid:
+            Boolean mask.
+        """
+        t, valid = self.parameter_to_closest_z_axis(atol, forward_only)
+        points = self.evaluate(t)
+
+        return points, t, valid
+
     #constructor methods
     @classmethod
     def collimated_line(
@@ -377,6 +486,7 @@ class RayBundle:
             phase=np.zeros((n_lam, n_rays), dtype=float),
             valid=np.ones((n_lam, n_rays), dtype=bool),
             n_medium=n_medium,
+            spectrum=spectrum,
         )
     
     @classmethod
@@ -503,6 +613,7 @@ class RayBundle:
             phase=np.zeros((n_lambda, n_rays), dtype=float),
             valid=np.ones((n_lambda, n_rays), dtype=bool),
             n_medium=n_medium,
+            spectrum=spectrum
         )
 @dataclass
 class Ray:
@@ -709,6 +820,30 @@ class RayTraceResult:
 
         return self.positions[:, ray_index, :]
     
+    def opl_gain_for_element(self, element: element_base) -> np.ndarray:
+        """
+        Compute the optical path length gain for a specific element.
+
+        Returns
+        -------
+        opl_gain:
+            Shape (*ray_shape)
+        """
+        opl = self.opl
+        element_indices = [i for i, e in enumerate(self.elements) if e == element]
+
+        if not element_indices:
+            raise ValueError(f"Element {element.name} not found in history.")
+
+        opl_gain = np.zeros_like(opl)
+
+        for idx in element_indices:
+            if idx == 0:
+                opl_gain[idx] = opl[idx]
+            else:
+                opl_gain[idx] = opl[idx] - opl[idx - 1]
+
+        return opl_gain    
 
 class Surface:
     """
@@ -777,6 +912,10 @@ class Surface:
             name = f"{self.__class__.__name__}_{Surface._surface_counter}"
 
         self.name = name
+
+    @classmethod
+    def reset_surface_counter(cls):
+        cls._surface_counter = 0
 
     @classmethod
     def from_euler_deg(
