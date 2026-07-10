@@ -296,6 +296,8 @@ def plot_raybundle_history_xz_by_wavelength(
     if wavelength_indices is None:
         available = np.asarray(history[0].wavelength, dtype=float).reshape(-1)
         wavelength_indices = [0, available.size // 2, available.size - 1]
+    if wavelength_indices == "all":
+        wavelength_indices = [i for i in range(wavelengths.size)]
 
     for i in wavelength_indices:
         available = np.asarray(history[0].wavelength, dtype=float).reshape(-1)

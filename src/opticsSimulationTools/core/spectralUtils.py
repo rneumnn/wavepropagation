@@ -211,3 +211,20 @@ def gaussian_spectrum_omega(
         sampling_method="gaussian_omega",
         center_wavelength=center_wavelength
     )
+
+@staticmethod
+def from_wavelength_list(wavelengths, weights = None):
+    wavelengths = np.array(wavelengths)
+    if weights is None:
+        weights = [1/len(wavelengths)]*len(wavelengths)
+    weights = np.array(weights)
+    
+    return Spectrum(
+        wavelengths=wavelengths,
+        omegas=2 * np.pi * c / wavelengths,
+        weights_lambda=weights,
+        weights_omega=weights,
+        d_omega=np.gradient(2 * np.pi * c / wavelengths),
+        d_lambda=np.gradient(wavelengths),
+        center_wavelength=np.mean(wavelengths),
+    )

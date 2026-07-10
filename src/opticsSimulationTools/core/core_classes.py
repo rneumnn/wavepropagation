@@ -185,6 +185,14 @@ class RayBundle:
             raise ValueError(
                 f"valid.shape must be {expected_shape}, got {self.valid.shape}."
             )
+        if np.argwhere(self.radius == 0).size == 0:
+            print("WARNING: added central ray to raybundle")
+            n_wl = self.wavelength.shape[0]
+            self.positions = np.concatenate([self.positions,np.zeros((n_wl,1,3))], axis = 1)
+            self.directions = np.concatenate([self.directions,np.array([[0,0,1]]*n_wl).reshape((n_wl,1,3))], axis = 1)
+            self.opl = np.concatenate([self.opl,np.zeros((n_wl,1,))], axis = 1)
+            self.phase = np.concatenate([self.phase, np.zeros((n_wl,1))], axis = 1)
+            self.valid = np.concatenate([self.valid, np.ones((n_wl,1), dtype=bool)], axis = 1)
 
     def copy(self):
         return RayBundle(
@@ -221,6 +229,11 @@ class RayBundle:
     @property
     def radius(self):
         return np.sqrt(self.positions[..., 0] ** 2 + self.positions[..., 1] ** 2)
+    
+    @property
+    def central_beam_index(self):
+        min_index = np.argwhere(self.radius == 0)
+        return min_index
 
     @property
     def phi(self):
@@ -829,22 +842,70 @@ class RayTraceResult:
         opl_gain:
             Shape (*ray_shape)
         """
-        opl = self.opl
-        element_indices = [i for i, e in enumerate(self.elements) if e == element]
-
-        if not element_indices:
+        element_indices = np.argwhere(np.array([e.name for e in self.element_history[1:]]) == element.name)
+        if element_indices.size == 0:
             raise ValueError(f"Element {element.name} not found in history.")
 
-        opl_gain = np.zeros_like(opl)
+        opl_gain = self.opl[element_indices[-1]][0]-self.opl[element_indices[0]][0]
+        return opl_gain
+    
+    def opl_gain_all_elements(self)->np.ndarray:
+        """
+        Compute the optical path length gain for all elements, ignores the propagation phase in between the elements.
 
-        for idx in element_indices:
-            if idx == 0:
-                opl_gain[idx] = opl[idx]
-            else:
-                opl_gain[idx] = opl[idx] - opl[idx - 1]
+        Returns:
+        opl_gain_single:
+            Shape (n_elements(unique),n_lambda, n_rays) - opl gain for each element
+        opl_gain_sum:
+            Shape (*rayshape) - summed opl from all elements (excludes inter-element media (f.e. Air))
+        element_names:
+            Shape (n_elements(unique),) - names of the elements
+        """
+        unique, indx = np.unique([e.name for e in self.element_history[1:]], return_index=True)
+        srt_idx = np.argsort(indx)
+        unique = unique[srt_idx]
+        indx = indx[srt_idx]
+        gain = np.zeros((unique.shape[0], *self.ray_shape))
+        for i, e in enumerate(indx):
+            gain[i,...] = self.opl_gain_for_element(self.element_history[1:][e])
+        return gain, np.sum(gain, axis = 0), unique
 
-        return opl_gain    
+    def phase_gain_for_element(self, element: element_base) -> np.ndarray:
+        """
+        Compute the phase gain for a specific element.
 
+        Returns
+        -------
+        phase_gain:
+            Shape (*ray_shape)
+        """
+        element_indices = np.argwhere(np.array([e.name for e in self.element_history[1:]]) == element.name)
+        if element_indices.size == 0:
+            raise ValueError(f"Element {element.name} not found in history.")
+
+        phase_gain = self.phase[element_indices[-1]][0]-self.phase[element_indices[0]][0]
+        return phase_gain
+    
+    def phase_gain_all_elements(self)->np.ndarray:
+        """
+        Compute the phase gain for all elements, ignores the propagation phase in between the elements.
+
+        Returns:
+        phase_gain_single:
+            Shape (n_elements(unique),n_lambda, n_rays) - phase gain for each element
+        phase_gain_sum:
+            Shape (*rayshape) - summed phase from all elements (excludes inter-element media (f.e. Air))
+        element_names:
+            Shape (n_elements(unique),) - names of the elements
+        """
+        unique, indx = np.unique([e.name for e in self.element_history[1:]], return_index=True)
+        srt_idx = np.argsort(indx)
+        unique = unique[srt_idx]
+        indx = indx[srt_idx]
+        gain = np.zeros((unique.shape[0], *self.ray_shape))
+        for i, e in enumerate(indx):
+            gain[i,...] = self.phase_gain_for_element(self.element_history[1:][e])
+        return gain, np.sum(gain, axis = 0), unique
 class Surface:
     """
     Base class for optical raytracing surfaces.

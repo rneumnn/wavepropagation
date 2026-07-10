@@ -80,7 +80,7 @@ class Material:
         c_keys = [k for k in dicttionary.keys() if ("C" in k) or ("c" in k)]
         B = [dicttionary[key] for key in b_keys]
         C = [dicttionary[key] for key in c_keys]
-        cls.sellmeier(
+        return cls.sellmeier(
             name = name,
             B = B,
             C = C,
