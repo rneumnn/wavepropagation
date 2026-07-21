@@ -450,56 +450,94 @@ def plot_prism_outline_xz(
     n_points: int = 1000,
     unit: str = "mm",
     fill: bool = False,
-    fill_alpha = .2,
-    fill_color = "cyan",
+    fill_alpha: float = 0.2,
+    fill_color: str = "cyan",
     **kwargs,
 ):
+    """
+    Plot a Prism outline in the global x-z plane.
+
+    Parent-child aware:
+    - Surfaces are child surfaces of prism.
+    - Surface center_position is interpreted in the prism-local frame.
+    - The final plotted coordinates are transformed with prism.local_to_global_points(...).
+
+    The plot uses horizontal axis z and vertical axis x, matching the previous
+    convention of this function.
+    """
     scale = spatial_scale_map[unit]
 
-
-    
-    x = prism.stop_aperture_x
-    if prism.orientation == -1:
-        xlim = (x, prism.aperture_radius)
+    # Choose x-range in prism-local coordinates.
+    if prism.stop_aperture_x is not None:
+        x_stop = prism.stop_aperture_x
     else:
-        xlim = (-prism.aperture_radius, x)
+        x_stop = 0.0
+
+    if prism.aperture_radius is not None:
+        aperture = prism.aperture_radius
+    elif prism.x_half_width is not None:
+        aperture = prism.x_half_width
+    else:
+        aperture = 0.01
+
+    if prism.orientation == -1:
+        xlim = (x_stop, aperture)
+    else:
+        xlim = (-aperture, x_stop)
 
     x = np.linspace(xlim[0], xlim[1], n_points)
+    y = np.zeros_like(x)
 
-    z1 = prism.surfaces[0].center_position[2] + prism.surfaces[0].z(
-        x - prism.surfaces[0].center_position[0],
-        np.zeros_like(x),
-    )
-    z2 = prism.surfaces[1].center_position[2] + prism.surfaces[1].z(
-        x - prism.surfaces[1].center_position[0],
-        np.zeros_like(x),
-    )
-
-    x_global = x
+    # Evaluate both planes in the prism-local frame.
+    # This must NOT use surface.center_position as a global position.
+    z1 = prism._plane_z_in_prism_frame(prism.S1, x, y)
+    z2 = prism._plane_z_in_prism_frame(prism.S2, x, y)
 
     valid = np.isfinite(z1) & np.isfinite(z2)
 
+    x = x[valid]
+    y = y[valid]
     z1 = z1[valid]
     z2 = z2[valid]
-    x_global = x_global[valid]
 
-    # Closed contour:
-    # surface1 from bottom to top,
-    # surface2 from top back to bottom.
-    z_poly = np.concatenate([z1, z2[::-1], z1[:1]])
-    x_poly = np.concatenate([x_global, x_global[::-1], x_global[:1]])
+    p1_local = np.stack([x, y, z1], axis=-1)
+    p2_local = np.stack([x, y, z2], axis=-1)
+
+    # Transform full contour to global coordinates through the prism parent.
+    p1_global = prism.local_to_global_points(p1_local)
+    p2_global = prism.local_to_global_points(p2_local)
+
+    # Closed contour: S1 forward, S2 backward, close to S1 start.
+    p_poly = np.concatenate(
+        [
+            p1_global,
+            p2_global[::-1],
+            p1_global[:1],
+        ],
+        axis=0,
+    )
+
+    z_poly = p_poly[:, 2]
+    x_poly = p_poly[:, 0]
+
+    artists = []
 
     if fill:
-        artist = ax.fill(
+        artists.extend(
+            ax.fill(
+                z_poly * scale,
+                x_poly * scale,
+                alpha=fill_alpha,
+                color=fill_color,
+            )
+        )
+
+    artists.extend(
+        ax.plot(
             z_poly * scale,
             x_poly * scale,
-            alpha = fill_alpha,
-            color = fill_color,
+            **kwargs,
         )
-    artist = ax.plot(
-        z_poly * scale,
-        x_poly * scale,
-        **kwargs,
     )
 
     ax.set_xlabel(f"z [{unit}]")
@@ -507,8 +545,7 @@ def plot_prism_outline_xz(
     ax.set_aspect("equal", adjustable="datalim")
     ax.grid(True)
 
-    return artist
-
+    return artists
 def plot_lens_outline_yz(
     surface1,
     surface2,

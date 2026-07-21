@@ -22,12 +22,14 @@ class PlaneSurface(Surface):
         center_position=None,
         normal=None,
         rotation=None,
+        parent=None,
         **kwargs,
     ):
         super().__init__(
             center_position=center_position,
             surface_function=None,
             rotation=rotation,
+            parent=parent,
             **kwargs,
         )
 
@@ -48,8 +50,12 @@ class PlaneSurface(Surface):
         """
         Geometric backend plane in global coordinates.
         """
+        origin_global = self.local_to_global_points(
+            np.array([0.0, 0.0, 0.0], dtype=float)
+        )
+
         return Plane(
-            position=self.center_position,
+            position=origin_global,
             normal=self.global_normal,
         )
 
@@ -111,17 +117,8 @@ class PlaneSurface(Surface):
         center_position=None,
         aperture_radius=None,
         rotation=None,
+        parent=None,
     ):
-        """
-        Create a PlaneSurface from local normal-vector angles in radians.
-
-        phi:
-            Deflection of the local normal from the y-z plane toward +x.
-
-        theta:
-            Angle of the local normal inside the y-z plane,
-            measured from +z toward +y.
-        """
         normal = vector_from_angles(phi, theta)
 
         return cls(
@@ -129,6 +126,7 @@ class PlaneSurface(Surface):
             normal=normal,
             aperture_radius=aperture_radius,
             rotation=rotation,
+            parent=parent,
         )
 
     @classmethod
@@ -139,16 +137,15 @@ class PlaneSurface(Surface):
         center_position=None,
         aperture_radius=None,
         rotation=None,
+        parent=None,
     ):
-        """
-        Same as from_normal_angles, but angles are given in degrees.
-        """
         return cls.from_normal_angles(
             phi=np.deg2rad(phi_deg),
             theta=np.deg2rad(theta_deg),
             center_position=center_position,
             aperture_radius=aperture_radius,
             rotation=rotation,
+            parent=parent,
         )
     
 
@@ -189,17 +186,26 @@ class SphericalSurface(Surface):
     for API consistency with other surfaces.
     """
 
-    def __init__(self, center_position=None, radius=1.0, rotation=None, **kwargs):
+    def __init__(self, center_position=None, radius=1.0, rotation=None, parent = None, **kwargs):
         super().__init__(
             center_position=center_position,
             surface_function=None,
             rotation=rotation,
+            parent=parent,
             **kwargs,
         )
         self.radius = float(radius)
 
+    @property
+    def global_center(self):
+        return self.local_to_global_points(
+            np.array([0.0, 0.0, 0.0], dtype=float)
+        )
+
     def intersect(self, rays: RayBundle, t_min=1e-12):
-        p = rays.positions - self.center_position
+        center = self.global_center
+
+        p = rays.positions - center
         u = rays.directions
 
         b = 2.0 * np.sum(p * u, axis=-1)
@@ -219,7 +225,10 @@ class SphericalSurface(Surface):
         return t, valid
 
     def normal_at_points(self, points):
-        return normalize(points - self.center_position)
+        center = self.global_center
+        return normalize(points - center)
+
+
     
 class SphericalSagSurface(Surface):
     """
@@ -261,6 +270,7 @@ class SphericalSagSurface(Surface):
         R: float = 0.0,
         aperture_radius: float | None = None,
         rotation=None,
+        parent=None,
         **kwargs,
     ):
         self.R = float(R)
@@ -274,6 +284,7 @@ class SphericalSagSurface(Surface):
             surface_function=sag_function,
             aperture_radius=aperture_radius,
             rotation=rotation,
+            parent=parent,
             **kwargs,
         )
 
@@ -339,6 +350,8 @@ class SphericalSagSurface(Surface):
                 center_position=self.center_position,
                 normal=np.array([0.0, 0.0, 1.0]),
                 rotation=self.rotation,
+                parent=self.parent,
+                aperture_radius=self.aperture_radius,
             )
             return plane.intersect(rays, t_min=t_min)
 
@@ -413,6 +426,7 @@ class FreeFormSurface(Surface):
         surface_function=None,
         aperture_radius=None,
         rotation=None,
+        parent=None,
         finite_difference_step: float = 1e-6,
         **kwargs,
     ):
@@ -421,6 +435,7 @@ class FreeFormSurface(Surface):
             surface_function=surface_function,
             aperture_radius=aperture_radius,
             rotation=rotation,
+            parent=parent,
             **kwargs,
         )
 
@@ -433,18 +448,15 @@ class FreeFormSurface(Surface):
         sag_function,
         aperture_radius=None,
         rotation=None,
+        parent=None,
         finite_difference_step: float = 1e-6,
     ):
-        """
-        Create a freeform surface from a local sag function.
-
-        The sag function must accept arrays x, y and return z = sag(x, y).
-        """
         return cls(
             center_position=center_position,
             surface_function=sag_function,
             aperture_radius=aperture_radius,
             rotation=rotation,
+            parent=parent,
             finite_difference_step=finite_difference_step,
         )
 
@@ -458,17 +470,9 @@ class FreeFormSurface(Surface):
         ry_deg: float = 0.0,
         rz_deg: float = 0.0,
         order: str = "zyx",
+        parent=None,
         finite_difference_step: float = 1e-6,
     ):
-        """
-        Create a freeform surface from a sag function and Euler angles.
-
-        rx_deg, ry_deg, rz_deg:
-            Rotation angles in degrees.
-
-        order:
-            Euler composition order. Default "zyx" means R = Rz @ Ry @ Rx.
-        """
         R = rotation_matrix_from_euler(
             rx=np.deg2rad(rx_deg),
             ry=np.deg2rad(ry_deg),
@@ -481,6 +485,7 @@ class FreeFormSurface(Surface):
             surface_function=sag_function,
             aperture_radius=aperture_radius,
             rotation=R,
+            parent=parent,
             finite_difference_step=finite_difference_step,
         )
 
@@ -626,6 +631,55 @@ class SurfaceSeparationCheck:
     separation: np.ndarray
     valid_samples: np.ndarray
 
+def _surface_global_origin(surface: Surface) -> np.ndarray:
+    """
+    Return the global position of a surface's local origin.
+
+    This is parent-child aware. If the surface has no parent, this is equivalent
+    to surface.center_position. If the surface has a parent, center_position is
+    interpreted in the parent frame and transformed to global coordinates.
+    """
+    return surface.local_to_global_points(
+        np.array([0.0, 0.0, 0.0], dtype=float)
+    )
+
+
+def _surface_global_basis(surface: Surface) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Return the global x, y, z basis vectors of a surface local frame.
+
+    The returned basis vectors include the full parent transform chain.
+    """
+    ex = surface.local_to_global_directions(
+        np.array([1.0, 0.0, 0.0], dtype=float)
+    )
+    ey = surface.local_to_global_directions(
+        np.array([0.0, 1.0, 0.0], dtype=float)
+    )
+    ez = surface.local_to_global_directions(
+        np.array([0.0, 0.0, 1.0], dtype=float)
+    )
+
+    return normalize(ex), normalize(ey), normalize(ez)
+
+
+def _surface_is_global_z_aligned(surface: Surface, atol: float = 1e-12) -> bool:
+    """
+    Return True if the surface local frame is aligned with the global frame.
+
+    This helper is used by check_surface_separation, which evaluates a surface
+    as a global z(x, y) height function. That is only valid for surfaces whose
+    local x, y, z axes are aligned with the global x, y, z axes.
+
+    Parent transforms are included automatically.
+    """
+    ex, ey, ez = _surface_global_basis(surface)
+
+    return (
+        np.allclose(ex, np.array([1.0, 0.0, 0.0]), atol=atol)
+        and np.allclose(ey, np.array([0.0, 1.0, 0.0]), atol=atol)
+        and np.allclose(ez, np.array([0.0, 0.0, 1.0]), atol=atol)
+    )
 
 def check_surface_separation(
     surface1: Surface,
@@ -635,55 +689,74 @@ def check_surface_separation(
     n_phi: int = 64,
     min_separation: float = 0.0,
     include_center: bool = True,
+    atol: float = 1e-12,
 ) -> SurfaceSeparationCheck:
     """
-    Check whether two non-rotated sag-like surfaces intersect inside a circular
-    aperture.
+    Check the global-z separation of two sag-like surfaces.
+
+    This function samples global x-y coordinates inside a circular aperture and
+    evaluates both surfaces as global height functions z_global(x_global, y_global).
 
     Important
     ---------
-    This function assumes both surfaces can be represented as global z(x, y)
-    over the sampled aperture.
+    This function is only valid when both surfaces are aligned with the global
+    coordinate frame, i.e. their effective local z-axes point along global +z
+    and their local x/y axes are aligned with global x/y.
 
-    It is not valid for strongly rotated surfaces, vertical surfaces, or
-    surfaces whose global projection is not single-valued in z.
+    Parent-child transforms are supported only if the resulting global surface
+    frames are still aligned with the global frame. This means translated
+    parented surfaces are allowed, but rotated parented surfaces are not.
 
-    Assumption
-    ----------
-    Both surfaces can be represented as global z(x, y) over the aperture.
-
-    The check evaluates
-
-        separation = z2_global(x, y) - z1_global(x, y)
-
-    and requires
-
-        separation >= min_separation
-
-    everywhere inside the sampled aperture.
+    For rotated surfaces, tilted surfaces, or surfaces belonging to one rigid
+    optical element, use check_surface_separation_common_frame instead.
 
     Parameters
     ----------
     surface1, surface2:
-        Surface objects with z(x, y), center_position, and local optical axis
-        aligned with global z.
+        Sag-like surfaces with z(x, y) defined in their own local frame.
 
     aperture_radius:
-        Circular aperture radius in meters.
+        Radius of the sampled circular aperture in global x-y coordinates.
 
     n_r, n_phi:
-        Sampling resolution.
+        Radial and angular sampling resolution.
 
     min_separation:
-        Minimum allowed distance along z between surface1 and surface2.
+        Minimum allowed global-z separation:
+            z2_global - z1_global >= min_separation
 
     include_center:
-        Whether to include r=0.
+        If True, include r = 0 in the radial sampling.
+
+    atol:
+        Tolerance for checking whether each surface frame is aligned with the
+        global coordinate frame.
 
     Returns
     -------
     SurfaceSeparationCheck
+        Result object containing validity, min/max separation, critical radius,
+        and sampled separation map.
+
+    Raises
+    ------
+    NotImplementedError
+        If either surface is not aligned with the global coordinate frame.
     """
+    if not _surface_is_global_z_aligned(surface1, atol=atol):
+        raise NotImplementedError(
+            "check_surface_separation requires surface1 to be aligned with the "
+            "global coordinate frame. Use check_surface_separation_common_frame "
+            "for rotated or parent-child rigid surfaces."
+        )
+
+    if not _surface_is_global_z_aligned(surface2, atol=atol):
+        raise NotImplementedError(
+            "check_surface_separation requires surface2 to be aligned with the "
+            "global coordinate frame. Use check_surface_separation_common_frame "
+            "for rotated or parent-child rigid surfaces."
+        )
+
     if include_center:
         r = np.linspace(0.0, aperture_radius, n_r)
     else:
@@ -696,18 +769,19 @@ def check_surface_separation(
     x_global = rr * np.cos(pp)
     y_global = rr * np.sin(pp)
 
-    # Convert global x/y to local x/y coordinates of each surface.
-    x1 = x_global - surface1.center_position[0]
-    y1 = y_global - surface1.center_position[1]
+    origin1 = _surface_global_origin(surface1)
+    origin2 = _surface_global_origin(surface2)
 
-    x2 = x_global - surface2.center_position[0]
-    y2 = y_global - surface2.center_position[1]
+    x1 = x_global - origin1[0]
+    y1 = y_global - origin1[1]
 
-    z1 = surface1.center_position[2] + surface1.z(x1, y1)
-    z2 = surface2.center_position[2] + surface2.z(x2, y2)
+    x2 = x_global - origin2[0]
+    y2 = y_global - origin2[1]
+
+    z1 = origin1[2] + surface1.z(x1, y1)
+    z2 = origin2[2] + surface2.z(x2, y2)
 
     separation = z2 - z1
-
     valid_samples = np.isfinite(separation)
 
     if not np.any(valid_samples):
@@ -715,6 +789,7 @@ def check_surface_separation(
             valid=False,
             min_separation=np.nan,
             max_separation=np.nan,
+            r_crit=np.nan,
             r_at_min=np.nan,
             phi_at_min=np.nan,
             point_at_min=np.array([np.nan, np.nan, np.nan]),
@@ -723,19 +798,17 @@ def check_surface_separation(
         )
 
     sep_valid = np.where(valid_samples, separation, np.inf)
-
-
     min_idx = np.unravel_index(np.argmin(sep_valid), sep_valid.shape)
 
     min_sep = sep_valid[min_idx]
-    max_sep = np.nanmax(separation)
+    max_sep = np.nanmax(np.where(valid_samples, separation, np.nan))
 
-    r_min = rr[min_idx]
-    phi_min = pp[min_idx]
-    too_small = rr[separation<=min_separation]
+    too_small = rr[valid_samples & (separation <= min_separation)]
     r_crit = aperture_radius
+
     if np.size(too_small) > 0:
         r_crit = np.min(too_small)
+
     point_min = np.array(
         [
             x_global[min_idx],
@@ -745,20 +818,17 @@ def check_surface_separation(
         dtype=float,
     )
 
-    is_valid = bool(min_sep >= min_separation)
-
     return SurfaceSeparationCheck(
-        valid=is_valid,
+        valid=bool(min_sep >= min_separation),
         min_separation=float(min_sep),
         max_separation=float(max_sep),
-        r_crit = float(r_crit),
-        r_at_min=float(r_min),
-        phi_at_min=float(phi_min),
+        r_crit=float(r_crit),
+        r_at_min=float(rr[min_idx]),
+        phi_at_min=float(pp[min_idx]),
         point_at_min=point_min,
         separation=separation,
         valid_samples=valid_samples,
     )
-
 
 def check_surface_separation_common_frame(
     surface1: Surface,
@@ -770,25 +840,51 @@ def check_surface_separation_common_frame(
     include_center: bool = True,
 ) -> SurfaceSeparationCheck:
     """
-    Check separation of two sag surfaces that share the same local orientation.
+    Check separation of two sag surfaces in the local frame of surface1.
 
-    This is the correct check for a rotated thick lens where both surfaces are
-    part of one rigid element.
+    This function is parent-child aware and is intended for surfaces that are
+    part of one rigid optical element, for example the two surfaces of a thick
+    lens.
 
-    The function samples local x-y coordinates in the frame of surface1 and
-    evaluates the signed separation along the shared local z-axis.
+    The algorithm samples x-y coordinates in surface1's local frame. For each
+    sample point, it evaluates surface1 and surface2 and compares their
+    positions along surface1's local z-axis.
 
-    Assumption
+    Unlike check_surface_separation, this function does not assume that the
+    surfaces are aligned with the global z-axis. It uses the full local-global
+    transform chain of each surface.
+
+    Assumptions
+    -----------
+    - surface1 and surface2 are sag-like surfaces.
+    - Both surfaces can be represented as z = f(x, y) in their own local frames.
+    - The sampled reference plane of surface1 maps meaningfully into surface2's
+      local x-y domain.
+    - This is a geometric thickness/separation check, not a ray-intersection
+      check.
+
+    Parameters
     ----------
-    surface1 and surface2 have the same rotation matrix.
+    surface1, surface2:
+        Sag-like surfaces. They may be parented and globally rotated.
 
-    The surfaces may be globally rotated and translated, but they must be
-    representable as local sag functions in the same local x-y frame.
+    aperture_radius:
+        Radius of the sampled aperture in surface1-local x-y coordinates.
+
+    n_r, n_phi:
+        Radial and angular sampling resolution.
+
+    min_separation:
+        Minimum allowed separation along surface1's local z-axis.
+
+    include_center:
+        If True, include r = 0 in the radial sampling.
 
     Returns
     -------
     SurfaceSeparationCheck
-        valid is True if separation >= min_separation for all valid samples.
+        Result object containing validity, min/max separation, critical radius,
+        and sampled separation map.
     """
     if include_center:
         r = np.linspace(0.0, aperture_radius, n_r)
@@ -799,43 +895,48 @@ def check_surface_separation_common_frame(
 
     pp, rr = np.meshgrid(phi, r, indexing="ij")
 
-    x = rr * np.cos(pp)
-    y = rr * np.sin(pp)
+    x1 = rr * np.cos(pp)
+    y1 = rr * np.sin(pp)
 
-    # Points on surface1 in surface1-local coordinates.
-    z1 = surface1.z(x, y)
-    p1_local_s1 = np.stack([x, y, z1], axis=-1)
+    z1 = surface1.z(x1, y1)
 
-    # Convert those x-y sample coordinates into global points on the reference
-    # local z=0 plane of surface1.
-    p_ref_local_s1 = np.stack([x, y, np.zeros_like(x)], axis=-1)
+    p1_local = np.stack([x1, y1, z1], axis=-1)
+    p1_global = surface1.local_to_global_points(p1_local)
+
+    # Reference points on the z=0 plane of surface1.
+    # These define which x-y points on surface2 are compared to the sampled
+    # x-y coordinates of surface1.
+    p_ref_local_s1 = np.stack(
+        [x1, y1, np.zeros_like(x1)],
+        axis=-1,
+    )
     p_ref_global = surface1.local_to_global_points(p_ref_local_s1)
 
-    # Express the same reference points in surface2 local coordinates.
+    # Express those reference points in surface2 local coordinates.
     p_ref_local_s2 = surface2.global_to_local_points(p_ref_global)
 
     x2 = p_ref_local_s2[..., 0]
     y2 = p_ref_local_s2[..., 1]
 
-    z2_surface2_local = surface2.z(x2, y2)
+    z2 = surface2.z(x2, y2)
 
-    # Surface2 point in global coordinates.
-    p2_local_s2 = np.stack([x2, y2, z2_surface2_local], axis=-1)
-    p2_global = surface2.local_to_global_points(p2_local_s2)
+    p2_local = np.stack([x2, y2, z2], axis=-1)
+    p2_global = surface2.local_to_global_points(p2_local)
 
-    # Express both surface points in surface1 local frame.
-    p1_global = surface1.local_to_global_points(p1_local_s1)
-
+    # Compare both surface points in surface1's local frame.
     p1_in_s1 = surface1.global_to_local_points(p1_global)
     p2_in_s1 = surface1.global_to_local_points(p2_global)
 
-    # Separation along surface1 local z-axis.
     separation = p2_in_s1[..., 2] - p1_in_s1[..., 2]
 
-    valid_samples = np.isfinite(separation) & np.isfinite(z1) & np.isfinite(z2_surface2_local)
+    valid_samples = (
+        np.isfinite(z1)
+        & np.isfinite(z2)
+        & np.isfinite(separation)
+    )
 
     if surface1.aperture_radius is not None:
-        valid_samples &= x**2 + y**2 <= surface1.aperture_radius**2
+        valid_samples &= x1**2 + y1**2 <= surface1.aperture_radius**2
 
     if surface2.aperture_radius is not None:
         valid_samples &= x2**2 + y2**2 <= surface2.aperture_radius**2
@@ -854,7 +955,6 @@ def check_surface_separation_common_frame(
         )
 
     sep_valid = np.where(valid_samples, separation, np.inf)
-
     min_idx = np.unravel_index(np.argmin(sep_valid), sep_valid.shape)
 
     min_sep = sep_valid[min_idx]
@@ -868,10 +968,8 @@ def check_surface_separation_common_frame(
 
     point_at_min_global = p1_global[min_idx]
 
-    is_valid = bool(min_sep >= min_separation)
-
     return SurfaceSeparationCheck(
-        valid=is_valid,
+        valid=bool(min_sep >= min_separation),
         min_separation=float(min_sep),
         max_separation=float(max_sep),
         r_crit=float(r_crit),
@@ -882,6 +980,7 @@ def check_surface_separation_common_frame(
         valid_samples=valid_samples,
     )
 
+
 def check_lens_surface_separation(
     lens,
     n_r: int = 512,
@@ -889,10 +988,54 @@ def check_lens_surface_separation(
     min_separation: float = 0.0,
 ) -> SurfaceSeparationCheck:
     """
-    Check physical thickness of a ThickRealLens in its local lens frame.
+    Check physical thickness of a ThickRealLens in the lens-local frame.
 
-    This is preferred over a generic global z-separation check because the lens
-    may be rotated.
+    This function is intended for the current parent-child lens framework:
+
+        lens
+          ├── S1: child surface
+          └── S2: child surface
+
+    The child surface positions are interpreted in the lens-local frame.
+    Therefore, the separation is evaluated as
+
+        z2_lens_local - z1_lens_local
+
+    where
+
+        z1_lens_local = S1.center_position[2] + S1.z(x, y)
+        z2_lens_local = S2.center_position[2] + S2.z(x, y)
+
+    This is independent of the global position and rotation of the lens. The
+    returned point_at_min is converted to global coordinates using the lens
+    transform.
+
+    Assumptions
+    -----------
+    - lens.S1 and lens.S2 are sag-like child surfaces of the lens.
+    - Their local x-y coordinates are aligned with the lens-local x-y plane.
+    - Their local z positions are given by S1.center_position[2] and
+      S2.center_position[2].
+    - This function checks geometric thickness, not optical validity or ray
+      intersections.
+
+    Parameters
+    ----------
+    lens:
+        Thick lens object with attributes S1, S2, aperture, and
+        local_to_global_points.
+
+    n_r, n_phi:
+        Radial and angular sampling resolution.
+
+    min_separation:
+        Minimum allowed physical separation between the two surfaces.
+
+    Returns
+    -------
+    SurfaceSeparationCheck
+        Result object containing validity, min/max separation, critical radius,
+        and sampled separation map.
     """
     r = np.linspace(0.0, lens.aperture, n_r)
     phi = np.linspace(0.0, 2.0 * np.pi, n_phi, endpoint=False)
@@ -902,12 +1045,17 @@ def check_lens_surface_separation(
     x = rr * np.cos(pp)
     y = rr * np.sin(pp)
 
-    z1 = lens.S1.z(x, y)
-    z2 = lens.center_thickness + lens.S2.z(x, y)
+    z1 = lens.S1.center_position[2] + lens.S1.z(x, y)
+    z2 = lens.S2.center_position[2] + lens.S2.z(x, y)
 
     separation = z2 - z1
-
     valid_samples = np.isfinite(separation)
+
+    if lens.S1.aperture_radius is not None:
+        valid_samples &= x**2 + y**2 <= lens.S1.aperture_radius**2
+
+    if lens.S2.aperture_radius is not None:
+        valid_samples &= x**2 + y**2 <= lens.S2.aperture_radius**2
 
     if not np.any(valid_samples):
         return SurfaceSeparationCheck(
@@ -924,6 +1072,9 @@ def check_lens_surface_separation(
 
     sep_valid = np.where(valid_samples, separation, np.inf)
     min_idx = np.unravel_index(np.argmin(sep_valid), sep_valid.shape)
+
+    min_sep = sep_valid[min_idx]
+    max_sep = np.nanmax(np.where(valid_samples, separation, np.nan))
 
     too_small = rr[valid_samples & (separation <= min_separation)]
     r_crit = lens.aperture
@@ -943,13 +1094,13 @@ def check_lens_surface_separation(
     point_global = lens.local_to_global_points(point_local)
 
     return SurfaceSeparationCheck(
-        valid=bool(sep_valid[min_idx] >= min_separation),
-        min_separation=float(sep_valid[min_idx]),
-        max_separation=float(np.nanmax(separation)),
+        valid=bool(min_sep >= min_separation),
+        min_separation=float(min_sep),
+        max_separation=float(max_sep),
         r_crit=float(r_crit),
         r_at_min=float(rr[min_idx]),
         phi_at_min=float(pp[min_idx]),
-        point_at_min=point_global,
+        point_at_min=np.asarray(point_global, dtype=float),
         separation=separation,
         valid_samples=valid_samples,
     )

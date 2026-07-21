@@ -179,30 +179,51 @@ wl_810=np.array([-0.224955,
 
 r = 7.5e-3
 N_rays = 50
-offset = 1e-3
+offset = 5e-3
 
 lens1 = rt.ThickRealLens(
     R1 = -129.75e-3, R2 = 0,
     center_thickness= 3e-3,
-    center_position=(0,0,offset+1.5e-3),
+    center_position=(0,0,offset),
     n=rt.N_BK7.n_function, aperture= r*5
 )
 
-lens2_center = (1.5+3/2+756.018+5.4/2)*1e-3
+lens2_center = offset+lens1.center_thickness + 756.018e-3
 
 lens2 = rt.ThickRealLens(
     R1 = 0, R2 = -519e-3, center_thickness=5.4e-3,
-    center_position=(0,0,offset+lens2_center),
+    center_position=(0,0,lens2_center),
     n=rt.N_BK7.n_function, aperture= r*5
 )
 
-screen = rt.Screen(center_position=(0,0,offset+lens2_center+(5.4e-3)/2+50e-3), surfaces=[rt.PlaneSurface(
+#doublet
+d1_thickness = 20.625076e-3
+doubletwidth = 700e-3
+d1 = rt.ThickRealLens(
+    R1 = 0,
+    R2= 118.686056e-3,
+    center_thickness=d1_thickness,
+    center_position = (0,0,doubletwidth + offset + lens1.center_thickness),
+    n=rt.N_SK2.n_function,
+    aperture = r*5
+)
+
+d2 = rt.ThickRealLens(
+    R1 = 118.686056e-3,
+    R2 = 0,
+    center_thickness=11.419225e-3,
+    center_position=(0,0,d1.center_position[-1]+d1_thickness+1e-10),
+    n= rt.N_SF5.n_function,
+    aperture=r*5
+)
+
+screen = rt.Screen(center_position=(0,0,offset+lens2_center+(5.4e-3)/2+50e-3), surface=rt.PlaneSurface(
     center_position=(0,0,lens2_center+(5.4e-3)/2+50e-3), normal=(0,0,-1), aperture_radius = r*5
-)])
+))
 
 system = rt.RayOpticalSystem([lens1, lens2, screen])
 spectrum = rt.from_wavelength_list(np.array([790,800,810])*1e-9)
-#spectrum = rt.gaussian_spectrum_omega(800e-9, 40e-9, num = 21)
+spectrum = rt.gaussian_spectrum_omega(800e-9, 30e-9, num = 21)
 laser = rt.RayBundle.collimated_line_spectral(
     np.linspace(-r,r,N_rays),
     0,
@@ -225,11 +246,11 @@ elementopl = result.opl_gain_all_elements()
 lens1_phase = result.phase_gain_for_element(lens1)
 lens2_phase = result.phase_gain_for_element(lens2)
 elementphase_single, elementphase, names = result.phase_gain_all_elements()
-ax.plot(result.history[0].radius[0,...]/r,result.rays.phase[0, result.rays.central_beam_index[0,-1]]-result.rays.phase[0,...],"x", label = "790 sim")
+ax.plot(result.history[0].radius[0,...]/r,result.rays.phase[result.rays.central_beam_index][0]-result.rays.phase[0,...],"x", label = "790 sim")
 #ax.plot(result.rays.radius[0,...]/result.rays.radius[0,...].max(),result.rays.phase[0, result.rays.central_beam_index[0,-1]]-result.rays.phase[0,...],"x", label = "790 sim")
-ax.plot(result.history[0].radius[1,...]/r,result.rays.phase[1, result.rays.central_beam_index[result.rays.index_omega0,-1]]-result.rays.phase[1,...],"x", label = "800 sim")
+ax.plot(result.history[0].radius[1,...]/r,result.rays.phase[result.rays.central_beam_index][result.rays.index_omega0]-result.rays.phase[1,...],"x", label = "800 sim")
 #ax.plot(result.rays.radius[1,...]/result.rays.radius[1,...].max(),result.rays.phase[1, result.rays.central_beam_index[result.rays.index_omega0,-1]]-result.rays.phase[1,...],"x", label = "800 sim")
-ax.plot(result.history[0].radius[2,...]/r, result.rays.phase[2, result.rays.central_beam_index[2,-1]]-result.rays.phase[2,...], "x", label = "810 sim")
+ax.plot(result.history[0].radius[2,...]/r, result.rays.phase[result.rays.central_beam_index][-1]-result.rays.phase[2,...], "x", label = "810 sim")
 #ax.plot(result.rays.radius[2,...]/result.rays.radius[2,...].max(), result.rays.phase[2, result.rays.central_beam_index[2,-1]]-result.rays.phase[2,...], "x", label = "810 sim")
 ax.plot(puple, wl_790, label = "790 zemax")
 ax.plot(puple, wl_800, label = "800 zemax")
@@ -241,5 +262,48 @@ ax.plot(puple, wl_810, label = "810 zemax")
 ax.legend()
 plt.show()
 
+from pathlib import Path
 
+savepath = Path(r"C:\Projekte\Axiparabola\raytrace_phasesimulationn_chromatic_ff_ovi")
+
+
+
+
+print(lens2.surfaces[0].center_position - lens1.surfaces[1].center_position)
+
+#doublet
+d1_thickness = 20.625076e-3
+doubletwidth = 700e-3
+d1 = rt.ThickRealLens(
+    R1 = 0,
+    R2= 118.686056e-3,
+    center_thickness=d1_thickness,
+    center_position = (0,0,doubletwidth + offset + lens1.center_thickness),
+    n=rt.N_SK2.n_function,
+    aperture = r*5
+)
+
+d2 = rt.ThickRealLens(
+    R1 = 118.686056e-3,
+    R2 = 0,
+    center_thickness=11.419225e-3,
+    center_position=(0,0,d1.center_position[-1]+d1_thickness+1e-10),
+    n= rt.N_SF5.n_function,
+    aperture=r*5
+)
+positions_z = (50e-3, 150e-3, 250e-3, 350e-3, 450e-3, 550e-3, 650e-3, 720e-3)
+system = rt.RayOpticalSystem(elements=[lens1, d1, d2, lens2, screen])
+
+for z in positions_z:
+    fig, ax = plt.subplots()
+    d1.set_transform(center_position=(0,0,z+offset+lens1.center_thickness))
+    d2.set_transform(center_position=(0,0,d1.center_position[-1]+d1_thickness+1e-10))
+    result = system.trace_and_plot_xz(rays=laser, ax = ax)
+    elementphase_single, elementphase, names = result.phase_gain_all_elements()
+    center_phase = elementphase[result.rays.central_beam_index]
+    relative_phase = elementphase - center_phase[:, None]
+    np.savez(savepath/f"relative_phase_at_z_{z*1e3:.0f}mm", relative_phase=relative_phase,radius=result.history[-2].radius, wavelengths = result.rays.wavelength, weights = result.rays.weights)
+    print(result.history[-2].radius)
+
+    #plt.show()
 

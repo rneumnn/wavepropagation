@@ -9,105 +9,477 @@ from ..raytracing.backend.geometry import normalize, Plane, orient_normal_agains
 from scipy.constants import c
 from ..raytracing.backend.visualization import plot_surface_xz, plot_raybundle_history_xz, plot_raybundle_history_xz_by_wavelength
 
-class element_base:
+class TransformMixin:
+    def __init__(self, center_position=None, rotation=None, parent=None):
+        if center_position is None:
+            center_position = np.zeros(3, dtype=float)
+
+        if rotation is None:
+            rotation = np.eye(3, dtype=float)
+
+        self.center_position = np.asarray(center_position, dtype=float)
+        self.rotation = np.asarray(rotation, dtype=float)
+        self.rotation_inv = self.rotation.T
+        self.parent:TransformMixin = parent
+
+    def local_to_parent_points(self, points):
+        points = np.asarray(points, dtype=float)
+        return self.center_position + points @ self.rotation.T
+
+    def parent_to_local_points(self, points):
+        points = np.asarray(points, dtype=float)
+        return (points - self.center_position) @ self.rotation
+
+    def local_to_parent_directions(self, directions):
+        directions = np.asarray(directions, dtype=float)
+        return directions @ self.rotation.T
+
+    def parent_to_local_directions(self, directions):
+        directions = np.asarray(directions, dtype=float)
+        return directions @ self.rotation
+
+    def local_to_global_points(self, points):
+        points_parent = self.local_to_parent_points(points)
+
+        if self.parent is None:
+            return points_parent
+
+        return self.parent.local_to_global_points(points_parent)
+
+    def global_to_local_points(self, points):
+        if self.parent is not None:
+            points = self.parent.global_to_local_points(points)
+
+        return self.parent_to_local_points(points)
+
+    def local_to_global_directions(self, directions):
+        directions_parent = self.local_to_parent_directions(directions)
+
+        if self.parent is None:
+            return directions_parent
+
+        return self.parent.local_to_global_directions(directions_parent)
+
+    def global_to_local_directions(self, directions):
+        if self.parent is not None:
+            directions = self.parent.global_to_local_directions(directions)
+
+        return self.parent_to_local_directions(directions)
+
+    def _update_position(self, center_position):
+        self.center_position = np.asarray(center_position, dtype=float)
+
+    def _update_rotation(self, rotation):
+        self.rotation = np.asarray(rotation, dtype=float)
+        self.rotation_inv = self.rotation.T
+class element_base(TransformMixin):
     """
-    Base class for optical elements. Subclasses should implement the apply method.
+    Base class for optical elements.
+
+    This class provides the common interface for both wave-propagation and
+    raytracing elements.
+
+    Transform convention
+    --------------------
+    Every optical element has its own local coordinate system.
+
+    If parent is None:
+        center_position and rotation describe the element frame in global
+        coordinates.
+
+    If parent is not None:
+        center_position and rotation are interpreted relative to the parent
+        frame.
+
+    Child surfaces
+    --------------
+    Raytracing elements may own one or more Surface objects via self.surfaces.
+
+    In the parent-child framework, surfaces should usually be defined in the
+    local element frame with
+
+        surface.parent = self
+
+    Example
+    -------
+    A thick lens should define its surfaces as:
+
+        self.S1 = SphericalSagSurface(
+            center_position=[0, 0, 0],
+            rotation=np.eye(3),
+            parent=self,
+            ...
+        )
+
+        self.S2 = SphericalSagSurface(
+            center_position=[0, 0, center_thickness],
+            rotation=np.eye(3),
+            parent=self,
+            ...
+        )
+
+    The element transform then moves and rotates the complete object as a
+    rigid body. Child surfaces automatically follow through the transform chain.
+
+    Subclassing rule
+    ----------------
+    Subclasses must not override apply().
+
+    Instead, implement one or both of:
+
+        _apply_for_wavepropagation(self, field)
+        _apply_for_raytracing(self, rays)
+
+    Attributes
+    ----------
+    radial_symmetric:
+        Whether this element may be applied to RadialField instances.
+
+    surfaces:
+        Tuple/list of child Surface objects. If None or empty, raytracing is
+        considered unavailable unless the subclass overrides _raytracing_available.
+
+    n_environment:
+        External refractive index function or scalar. If None, AIR.n_function
+        is used.
+
+    center_position:
+        Local origin of the element frame. Global if parent is None, otherwise
+        relative to parent.
+
+    rotation:
+        Rotation matrix of the element frame. Global if parent is None,
+        otherwise relative to parent.
     """
+
     N_ENVIRONMENT_STANDARD = AIR.n_function
     debug = True
     n_element = 0
-    def __init__(self, radial_symmetric=False, center_position:np.ndarray[float]|None = None, surfaces:tuple[Surface]|None = None, n_environment=None):
-        self.name = "BaseElement"
-        self.description = "Base class for optical elements. Subclasses should implement the apply method."
-        self.radial_symmetric = radial_symmetric
-        self.surfaces = surfaces    #enables raytracing for element
-        self.center_position = center_position    #enables raytracing for element
-        element_base.n_element += 1
-        self._update_properties()
-        self.n_environment = n_environment
+
+    def __init__(
+        self,
+        radial_symmetric: bool = False,
+        center_position: np.ndarray | None = None,
+        rotation: np.ndarray | None = None,
+        parent=None,
+        surfaces: tuple[Surface, ...] | list[Surface] | None = None,
+        n_environment=None,
+        description: str | None = None,
+    ):
+        TransformMixin.__init__(
+            self,
+            center_position=center_position,
+            rotation=rotation,
+            parent=parent,
+        )
+
+        self.radial_symmetric = bool(radial_symmetric)
+
+        if surfaces is None:
+            self.surfaces = None
+        else:
+            self.surfaces = tuple(surfaces)
+
         if n_environment is None:
             self.n_environment = element_base.N_ENVIRONMENT_STANDARD
+        else:
+            self.n_environment = n_environment
 
-        return
-    
+        self.description = (
+            description
+            if description is not None
+            else "Base class for optical elements."
+        )
+
+        self._update_properties()
+
     def __init_subclass__(cls, **kwargs):
+        """
+        Prevent subclasses from overriding apply().
+
+        The public apply() method contains the dispatch logic between
+        wave-propagation and raytracing. Subclasses should instead implement
+        _apply_for_wavepropagation() and/or _apply_for_raytracing().
+        """
         super().__init_subclass__(**kwargs)
 
         if "apply" in cls.__dict__:
             raise TypeError(
                 f"{cls.__name__} must not override apply(). "
-                "Override _apply_for_wavepropagation() instead."
+                "Override _apply_for_wavepropagation() or "
+                "_apply_for_raytracing() instead."
             )
 
         cls.n_element = 0
-    
+
     def _update_properties(self):
+        """
+        Assign a unique element name within the concrete subclass.
+        """
         self.__class__.n_element += 1
         self.name = f"{self.__class__.__name__}_{self.__class__.n_element}"
-    
-    def _radial_symmetric_check(self, field:Field|RadialField):
+
+    def _radial_symmetric_check(self, field: Field | RadialField):
+        """
+        Raise an error if a non-radial element is applied to a RadialField.
+        """
         if not self.radial_symmetric and isinstance(field, RadialField):
-            raise ValueError(f"{self.name} is not a radial symmetric element and cannot be applied to RadialField instances.")
-        
+            raise ValueError(
+                f"{self.name} is not a radial symmetric element and cannot be "
+                "applied to RadialField instances."
+            )
+
+    def _update_position(self, position):
+        """
+        Update the element position.
+
+        In the parent-child framework, this changes only the transform of the
+        element itself. Child surfaces automatically follow because their
+        global coordinates are computed through their parent transform.
+
+        Parameters
+        ----------
+        position:
+            New element-frame origin. If self.parent is None, this is a global
+            position. Otherwise it is relative to the parent frame.
+        """
+        TransformMixin._update_position(self, position)
+
+    def _update_rotation(self, rotation):
+        """
+        Update the element rotation.
+
+        In the parent-child framework, this changes only the transform of the
+        element itself. Child surfaces automatically follow.
+
+        Parameters
+        ----------
+        rotation:
+            New 3x3 rotation matrix. If self.parent is None, this is a global
+            orientation. Otherwise it is relative to the parent frame.
+        """
+        TransformMixin._update_rotation(self, rotation)
+
+    def set_transform(
+        self,
+        center_position: np.ndarray | None = None,
+        rotation: np.ndarray | None = None,
+    ):
+        """
+        Update position and/or rotation of the element.
+
+        This is a convenience method. It does not rebuild child surfaces.
+
+        Examples
+        --------
+        element.set_transform(center_position=[0, 0, 0.2])
+
+        element.set_transform(
+            center_position=[0, 0, 0.2],
+            rotation=rotation_matrix_y(np.deg2rad(5.0)),
+        )
+        """
+        if center_position is not None:
+            self._update_position(center_position)
+
+        if rotation is not None:
+            self._update_rotation(rotation)
+
+        return self
+
+    def add_surface(self, surface: Surface, set_parent: bool = True):
+        """
+        Add one child surface to the element.
+
+        Parameters
+        ----------
+        surface:
+            Surface object to add.
+
+        set_parent:
+            If True, set surface.parent = self. This is usually desired for
+            parent-child raytracing elements.
+
+        Returns
+        -------
+        surface:
+            The same surface object, for convenient assignment.
+        """
+        if set_parent:
+            surface.parent = self
+
+        if self.surfaces is None:
+            self.surfaces = (surface,)
+        else:
+            self.surfaces = tuple(self.surfaces) + (surface,)
+
+        return surface
+
+    def set_surfaces(
+        self,
+        surfaces: tuple[Surface, ...] | list[Surface],
+        set_parent: bool = True,
+    ):
+        """
+        Replace the element's surface list.
+
+        Parameters
+        ----------
+        surfaces:
+            Iterable of Surface objects.
+
+        set_parent:
+            If True, set each surface.parent = self.
+
+        Returns
+        -------
+        self
+        """
+        if set_parent:
+            for surface in surfaces:
+                surface.parent = self
+
+        self.surfaces = tuple(surfaces)
+
+        return self
+
     @property
     def _raytracing_available(self):
-        if (self.surfaces is None) | (self.center_position is None):
-            return False
-        return True
-    
+        """
+        Return True if the element has surfaces for raytracing.
+
+        In the parent-child framework, center_position is no longer used as a
+        raytracing availability flag because every element has a TransformMixin
+        transform. Raytracing availability is therefore determined by whether
+        surfaces are available.
+
+        Subclasses with custom raytracing but no explicit surfaces may override
+        this property.
+        """
+        return self.surfaces is not None and len(self.surfaces) > 0
+
     def plot_to_axes_xz(self, ax, **kwargs):
-        for s in self.surfaces:
-            plot_surface_xz(s,ax, **kwargs)
+        """
+        Plot all element surfaces into an x-z axes.
+
+        This assumes that plot_surface_xz(surface, ax, ...) uses the surface's
+        parent-aware global point methods, e.g. surface.points_xz(...).
+        """
+        if self.surfaces is None:
+            return ax
+
+        for surface in self.surfaces:
+            plot_surface_xz(surface, ax, **kwargs)
+
+        return ax
 
     def apply(self, input: FieldBase | RayBundle) -> FieldBase | RayTraceResult:
         """
-        Public method. Do not override this in subclasses.
+        Apply the optical element to a field or ray bundle.
 
-        Standard element logic goes here.
+        This public method must not be overridden by subclasses.
+
+        Dispatch
+        --------
+        FieldBase input:
+            Calls _apply_for_wavepropagation(input).
+
+        RayBundle input:
+            Calls _apply_for_raytracing(input).
+
+        Returns
+        -------
+        FieldBase or RayTraceResult
+            Output object produced by the corresponding backend method.
         """
         if isinstance(input, FieldBase):
             self._radial_symmetric_check(input)
+
             if self.debug:
                 print(f"Applying {self.name}")
+
             out = self._apply_for_wavepropagation(input)
             out.last_element = self
 
         elif isinstance(input, RayBundle):
             if self.debug:
                 print(f"Applying {self.name}")
+
             if not self._raytracing_available:
-                raise NotImplementedError(f"{type(self)} is not available for raytracing. Surfaces and Position for the element must be defined! {self.surfaces}, {self.position}")
+                raise NotImplementedError(
+                    f"{type(self).__name__} is not available for raytracing. "
+                    "Raytracing elements must define self.surfaces or override "
+                    "_raytracing_available."
+                )
+
             out = self._apply_for_raytracing(input)
 
         else:
             raise TypeError(
-                f"{self.name} cannot be applied to input of type {type(input).__name__}."
+                f"{self.name} cannot be applied to input of type "
+                f"{type(input).__name__}."
             )
 
         return out
 
-    def _apply_for_wavepropagation(self, field: Field | RadialField) -> Field | RadialField:
+    def _apply_for_wavepropagation(
+        self,
+        field: Field | RadialField,
+    ) -> Field | RadialField:
         """
-        Subclasses must implement this instead of apply().
+        Apply the element to a wave-propagation field.
+
+        Subclasses should override this method if they support field-based
+        propagation.
+
+        Parameters
+        ----------
+        field:
+            Field or RadialField instance.
+
+        Returns
+        -------
+        Field or RadialField
+            Propagated or modified field.
         """
         raise NotImplementedError(
-            f"{self.__class__.__name__} must implement _apply_for_wavepropagation() to be able to be used for wavepropagation, not apply()."
+            f"{self.__class__.__name__} must implement "
+            "_apply_for_wavepropagation() to be used for wave propagation."
         )
-    
-    def _apply_for_raytracing(self, rays: RayBundle)-> RayTraceResult:
+
+    def _apply_for_raytracing(self, rays: RayBundle) -> RayTraceResult:
         """
-        Subclasses must implement this instead of apply().
+        Apply the element to a RayBundle.
+
+        Subclasses should override this method if they support raytracing.
+
+        Parameters
+        ----------
+        rays:
+            Input RayBundle.
+
+        Returns
+        -------
+        RayTraceResult
+            Raytracing result containing final rays and optional history.
         """
         raise NotImplementedError(
-            f"{self.__class__.__name__} must implement _apply_for_raytracing() to be able to be used for raytracing, not apply()."
+            f"{self.__class__.__name__} must implement "
+            "_apply_for_raytracing() to be used for raytracing."
         )
-    
+
     @classmethod
     def reset_element_counter(cls):
+        """
+        Reset the instance counter of this element class.
+        """
         cls.n_element = 0
 
     @classmethod
-    def all_subclasses(cls)->list[element_base]:
+    def all_subclasses(cls) -> list[element_base]:
+        """
+        Return all recursive subclasses of this class.
+        """
         subclasses = []
 
         for subclass in cls.__subclasses__():
@@ -115,9 +487,12 @@ class element_base:
             subclasses.extend(subclass.all_subclasses())
 
         return subclasses
-    
+
     @classmethod
     def reset_all_element_counters(cls):
+        """
+        Reset instance counters of all element subclasses.
+        """
         for element_class in cls.all_subclasses():
             element_class.reset_element_counter()
 
@@ -152,9 +527,13 @@ class RayBundle:
     surface: Surface = None
     spectrum: Spectrum = None
     action: str = None
+    add_central_ray: bool = True
 
     def __post_init__(self):
-        if type(self.wavelength) == float: self.wavelength = [self.wavelength]
+        # --- basic conversion ---
+        if isinstance(self.wavelength, float):
+            self.wavelength = [self.wavelength]
+
         self.positions = np.asarray(self.positions, dtype=float)
         self.directions = normalize(np.asarray(self.directions, dtype=float))
         self.wavelength = np.asarray(self.wavelength, dtype=float)
@@ -163,7 +542,12 @@ class RayBundle:
         self.phase = np.asarray(self.phase, dtype=float)
         self.valid = np.asarray(self.valid, dtype=bool)
 
-        expected_shape = self.positions.shape[:-1]
+        # --- basic geometry checks ---
+        if self.positions.shape[-1] != 3:
+            raise ValueError(
+                "positions must have shape (..., 3). "
+                f"Got {self.positions.shape}."
+            )
 
         if self.directions.shape != self.positions.shape:
             raise ValueError(
@@ -171,29 +555,202 @@ class RayBundle:
                 f"Got {self.directions.shape} and {self.positions.shape}."
             )
 
-        if self.opl.shape != expected_shape:
+        expected_shape = self.positions.shape[:-1]
+
+        # --- classify bundle shape ---
+        # mono:
+        #     positions.shape == (N_rays, 3)
+        #
+        # spectral:
+        #     positions.shape == (N_lambda, N_rays, 3)
+        #     or more generally (N_lambda, ..., 3)
+        if self.positions.ndim == 2:
+            is_spectral_shape = False
+
+        elif self.positions.ndim >= 3:
+            n_lambda_pos = self.positions.shape[0]
+            n_lambda_wl = self.wavelength.reshape(-1).size
+            is_spectral_shape = n_lambda_pos == n_lambda_wl and n_lambda_wl > 1
+
+        else:
             raise ValueError(
-                f"opl.shape must be {expected_shape}, got {self.opl.shape}."
+                f"Invalid positions shape {self.positions.shape}."
             )
 
-        if self.phase.shape != expected_shape:
-            raise ValueError(
-                f"phase.shape must be {expected_shape}, got {self.phase.shape}."
+        # --- normalize wavelength shape ---
+        if is_spectral_shape:
+            n_lambda = self.positions.shape[0]
+            wl = self.wavelength.reshape(-1)
+
+            if wl.size != n_lambda:
+                raise ValueError(
+                    "Spectral RayBundle requires wavelength.size == positions.shape[0]. "
+                    f"Got wavelength.size={wl.size}, positions.shape={self.positions.shape}."
+                )
+
+            # Keep wavelength broadcastable to ray shape:
+            # line:  (N_lambda, 1)
+            # polar: (N_lambda, 1) still works with shape (N_lambda, N_rays)
+            self.wavelength = wl[:, None]
+
+        else:
+            wl = self.wavelength.reshape(-1)
+
+            if wl.size != 1:
+                raise ValueError(
+                    "Monochromatic RayBundle has positions.shape == (N_rays, 3), "
+                    "so wavelength must be scalar or size 1. "
+                    f"Got wavelength.shape={self.wavelength.shape}."
+                )
+
+            self.wavelength = np.asarray([float(wl[0])], dtype=float)
+
+        # --- broadcast/check ray-shaped arrays ---
+        self.opl = np.broadcast_to(self.opl, expected_shape).astype(float).copy()
+        self.phase = np.broadcast_to(self.phase, expected_shape).astype(float).copy()
+        self.valid = np.broadcast_to(self.valid, expected_shape).astype(bool).copy()
+
+        # weights may be scalar, ray-shaped, or spectral weights
+        self.weights = self._normalize_weights(self.weights, expected_shape, is_spectral_shape)
+
+        # --- add central ray if missing ---
+        if self.add_central_ray:
+            self._ensure_central_ray(is_spectral_shape=is_spectral_shape)
+
+    def _normalize_weights(self, weights, expected_shape, is_spectral_shape: bool):
+        """
+        Normalize weights to a shape compatible with rays.shape.
+
+        Allowed
+        -------
+        scalar:
+            same weight for all rays
+
+        mono:
+            weights.shape == (N_rays,)
+
+        spectral:
+            weights.shape == (N_lambda,)
+            or weights.shape == (N_lambda, 1)
+            or weights.shape == (N_lambda, N_rays)
+        """
+        weights = np.asarray(weights, dtype=float)
+
+        if weights.shape == ():
+            return np.broadcast_to(weights, expected_shape).astype(float).copy()
+
+        if is_spectral_shape:
+            n_lambda = expected_shape[0]
+
+            # spectral weights: (N_lambda,)
+            if weights.ndim == 1 and weights.size == n_lambda:
+                weights = weights[:, None]
+
+            return np.broadcast_to(weights, expected_shape).astype(float).copy()
+
+        return np.broadcast_to(weights, expected_shape).astype(float).copy()
+    
+    def _ensure_central_ray(self, is_spectral_shape: bool):
+        """
+        Add a central ray if no ray with x = y = 0 exists.
+
+        Mono
+        ----
+        positions:
+            (N_rays, 3) -> (N_rays + 1, 3)
+
+        Spectral
+        --------
+        positions:
+            (N_lambda, N_rays, 3) -> (N_lambda, N_rays + 1, 3)
+
+        The added central ray starts at x = y = 0. Its z-position is copied from
+        the first existing ray, and its direction is copied from the first existing
+        ray. This is safer than always using z = 0 and direction [0, 0, 1].
+        """
+        has_central_ray = np.any(np.isclose(self.radius, 0.0, atol=1e-15))
+        self.add_central_ray = False # ensure only check at first initialisation
+        if has_central_ray:
+            return
+
+        print("WARNING: added central ray to RayBundle")
+
+        if is_spectral_shape:
+            n_lambda = self.positions.shape[0]
+
+            central_positions = self.positions[:, :1, :].copy()
+            central_positions[..., 0] = 0.0
+            central_positions[..., 1] = 0.0
+
+            central_directions = self.directions[:, :1, :].copy()
+            central_opl = np.zeros((n_lambda, 1), dtype=float)
+            central_phase = np.zeros((n_lambda, 1), dtype=float)
+            central_valid = np.ones((n_lambda, 1), dtype=bool)
+
+            # Use first ray weight per wavelength as neutral default.
+            central_weights = self.weights[:, :1].copy()
+
+            self.positions = np.concatenate(
+                [self.positions, central_positions],
+                axis=1,
+            )
+            self.directions = np.concatenate(
+                [self.directions, central_directions],
+                axis=1,
+            )
+            self.opl = np.concatenate(
+                [self.opl, central_opl],
+                axis=1,
+            )
+            self.phase = np.concatenate(
+                [self.phase, central_phase],
+                axis=1,
+            )
+            self.valid = np.concatenate(
+                [self.valid, central_valid],
+                axis=1,
+            )
+            self.weights = np.concatenate(
+                [self.weights, central_weights],
+                axis=1,
             )
 
-        if self.valid.shape != expected_shape:
-            raise ValueError(
-                f"valid.shape must be {expected_shape}, got {self.valid.shape}."
-            )
-        if np.argwhere(self.radius == 0).size == 0:
-            print("WARNING: added central ray to raybundle")
-            n_wl = self.wavelength.shape[0]
-            self.positions = np.concatenate([self.positions,np.zeros((n_wl,1,3))], axis = 1)
-            self.directions = np.concatenate([self.directions,np.array([[0,0,1]]*n_wl).reshape((n_wl,1,3))], axis = 1)
-            self.opl = np.concatenate([self.opl,np.zeros((n_wl,1,))], axis = 1)
-            self.phase = np.concatenate([self.phase, np.zeros((n_wl,1))], axis = 1)
-            self.valid = np.concatenate([self.valid, np.ones((n_wl,1), dtype=bool)], axis = 1)
+        else:
+            central_position = self.positions[:1, :].copy()
+            central_position[..., 0] = 0.0
+            central_position[..., 1] = 0.0
 
+            central_direction = self.directions[:1, :].copy()
+            central_opl = np.zeros((1,), dtype=float)
+            central_phase = np.zeros((1,), dtype=float)
+            central_valid = np.ones((1,), dtype=bool)
+            central_weight = self.weights[:1].copy()
+
+            self.positions = np.concatenate(
+                [self.positions, central_position],
+                axis=0,
+            )
+            self.directions = np.concatenate(
+                [self.directions, central_direction],
+                axis=0,
+            )
+            self.opl = np.concatenate(
+                [self.opl, central_opl],
+                axis=0,
+            )
+            self.phase = np.concatenate(
+                [self.phase, central_phase],
+                axis=0,
+            )
+            self.valid = np.concatenate(
+                [self.valid, central_valid],
+                axis=0,
+            )
+            self.weights = np.concatenate(
+                [self.weights, central_weight],
+                axis=0,
+            )
+        
     def copy(self):
         return RayBundle(
             positions=self.positions.copy(),
@@ -208,6 +765,7 @@ class RayBundle:
             last_element= self.last_element,
             spectrum=self.spectrum,
             action=self.action,
+            add_central_ray=self.add_central_ray
         )
 
     @property
@@ -232,8 +790,45 @@ class RayBundle:
     
     @property
     def central_beam_index(self):
+        """ 
+        Returns the index of the ray where radius == 0
+        Has the same shape as radius.shape.
+
+        Mono:
+            radius.shape == (N_rays,)
+            returns tuple
+
+        Spectral:
+            radius.shape == (N_lambda, N_rays)
+            returns tuple(array) (index of center over the spectral regions)
+        """
         min_index = np.argwhere(self.radius == 0)
-        return min_index
+        return tuple(min_index.T)
+    
+    @property
+    def central_ray_index(self):
+        """
+        Return the spatial index of the central ray.
+
+        Mono:
+            radius.shape == (N_rays,)
+            returns int
+
+        Spectral:
+            radius.shape == (N_lambda, N_rays)
+            returns int
+
+        For spectral bundles, the central ray is selected from the mean radius over
+        wavelength.
+        """
+        r = self.radius
+
+        if self.positions.ndim >= 3:
+            r_spatial = np.nanmean(r, axis=0)
+        else:
+            r_spatial = r
+
+        return int(np.nanargmin(r_spatial))
 
     @property
     def phi(self):
@@ -331,6 +926,34 @@ class RayBundle:
 
             out.opl[self.valid] += (n * distance)[self.valid]
             out.phase[self.valid] += (k0 * n * distance)[self.valid]
+
+        return out
+    
+    def central_value(self, value):
+        """
+        Return value at the central ray.
+
+        Mono
+        ----
+        value.shape == (N_rays,)
+        returns scalar
+
+        Spectral
+        --------
+        value.shape == (N_lambda, N_rays)
+        returns shape (N_lambda,)
+        """
+        value = np.asarray(value)
+
+        idx = self.central_ray_index
+
+        if self.positions.ndim >= 3:
+            return value[:, idx]
+
+        out = value[idx]
+
+        if np.asarray(out).shape == ():
+            return out.item()
 
         return out
     
@@ -906,7 +1529,8 @@ class RayTraceResult:
         for i, e in enumerate(indx):
             gain[i,...] = self.phase_gain_for_element(self.element_history[1:][e])
         return gain, np.sum(gain, axis = 0), unique
-class Surface:
+    
+class Surface(TransformMixin):
     """
     Base class for optical raytracing surfaces.
 
@@ -917,32 +1541,14 @@ class Surface:
     Local surface equation:
         z = surface_function(x, y)
 
-    Global embedding:
-        p_global = center_position + R @ p_local
+    If parent is None:
+        center_position and rotation are interpreted globally.
 
-    In this implementation points are stored as row vectors (..., 3), therefore
-    the transformations are written as:
+    If parent is not None:
+        center_position and rotation are interpreted relative to parent.
 
-        local  = (global - center_position) @ R
-        global = center_position + local @ R.T
-
-    Parameters
-    ----------
-    center_position:
-        Global 3D position of the local coordinate origin.
-
-    surface_function:
-        Local sag function z = f(x, y). Can be None for surfaces that implement
-        their own geometry.
-
-    aperture_radius:
-        Optional circular aperture radius in the local x-y plane.
-
-    rotation:
-        3x3 rotation matrix describing the orientation of the local surface
-        coordinate system in global coordinates.
-
-        If None, identity rotation is used.
+    Transform chain:
+        local surface coordinates -> parent coordinates -> global coordinates
     """
 
     _surface_counter = 0
@@ -953,20 +1559,18 @@ class Surface:
         surface_function=None,
         aperture_radius=None,
         rotation=None,
+        parent=None,
         name=None,
     ):
-        if center_position is None:
-            center_position = np.zeros(3, dtype=float)
+        TransformMixin.__init__(
+            self,
+            center_position=center_position,
+            rotation=rotation,
+            parent=parent,
+        )
 
-        if rotation is None:
-            rotation = np.eye(3, dtype=float)
-
-        self.center_position = np.asarray(center_position, dtype=float)
         self.surface_function = surface_function
         self.aperture_radius = aperture_radius
-
-        self.rotation = np.asarray(rotation, dtype=float)
-        self.rotation_inv = self.rotation.T
 
         if name is None:
             Surface._surface_counter += 1
@@ -986,24 +1590,9 @@ class Surface:
         ry_deg: float = 0.0,
         rz_deg: float = 0.0,
         order: str = "zyx",
+        parent=None,
         **kwargs,
     ):
-        """
-        Create a surface using Euler angles in degrees.
-
-        Parameters
-        ----------
-        rx_deg, ry_deg, rz_deg:
-            Rotation angles around x, y, z in degrees.
-
-        order:
-            Euler composition order. Default "zyx" means:
-
-                R = Rz @ Ry @ Rx
-
-        kwargs:
-            Forwarded to the concrete surface constructor.
-        """
         R = rotation_matrix_from_euler(
             rx=np.deg2rad(rx_deg),
             ry=np.deg2rad(ry_deg),
@@ -1014,50 +1603,9 @@ class Surface:
         return cls(
             center_position=center_position,
             rotation=R,
+            parent=parent,
             **kwargs,
         )
-
-    def global_to_local_points(self, points: np.ndarray) -> np.ndarray:
-        """
-        Transform global points to local surface coordinates.
-
-        Parameters
-        ----------
-        points:
-            Global points, shape (..., 3).
-
-        Returns
-        -------
-        local_points:
-            Local points, shape (..., 3).
-        """
-        points = np.asarray(points, dtype=float)
-        return (points - self.center_position) @ self.rotation
-
-    def local_to_global_points(self, points: np.ndarray) -> np.ndarray:
-        """
-        Transform local surface points to global coordinates.
-        """
-        points = np.asarray(points, dtype=float)
-        return self.center_position + points @ self.rotation.T
-
-    def global_to_local_directions(self, directions: np.ndarray) -> np.ndarray:
-        """
-        Transform global direction vectors to local surface coordinates.
-
-        Directions are not translated.
-        """
-        directions = np.asarray(directions, dtype=float)
-        return directions @ self.rotation
-
-    def local_to_global_directions(self, directions: np.ndarray) -> np.ndarray:
-        """
-        Transform local direction vectors to global coordinates.
-
-        Directions are not translated.
-        """
-        directions = np.asarray(directions, dtype=float)
-        return directions @ self.rotation.T
 
     def z(self, x, y):
         """
@@ -1096,43 +1644,15 @@ class Surface:
     def points_xz(self, x, y=0.0):
         """
         Evaluate global points on the local x-z meridional section.
-
-        This is useful for plotting rotated surfaces.
-
-        Parameters
-        ----------
-        x:
-            Local x coordinates.
-
-        y:
-            Local y coordinate. Default 0.
-
-        Returns
-        -------
-        points:
-            Global surface points, shape (..., 3).
         """
         x = np.asarray(x, dtype=float)
         y = np.full_like(x, y, dtype=float)
 
         return self.global_points_from_xy(x, y)
-    
+
     def points_yz(self, y, x=0.0):
         """
         Evaluate global points on the local y-z meridional section.
-
-        Parameters
-        ----------
-        y:
-            Local y coordinates.
-
-        x:
-            Local x coordinate. Default is 0.
-
-        Returns
-        -------
-        points:
-            Global surface points, shape (..., 3).
         """
         y = np.asarray(y, dtype=float)
         x = np.full_like(y, x, dtype=float)
