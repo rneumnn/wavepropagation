@@ -6,7 +6,7 @@ from .grid import Grid, RadialGrid, QDHTRadialGrid
 from ..core.spectralUtils import Spectrum
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
-from ..elements import element_base
+from ..core.core_classes import element_base
 
 def is_visible(wavelength)->bool:
         if (wavelength>380e-9) and (wavelength<780e-9):

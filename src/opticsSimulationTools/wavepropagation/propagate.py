@@ -3,7 +3,7 @@ from .field import Field, RadialField
 from .utils import resample_real_array, resample_complex_array, pad_array_centered, padded_grid_like
 from scipy.signal import czt
 from .hankelBackend import _UnitaryQDHTBackend, PyHankBackend
-from ..elements import element_base
+from ..core.core_classes import element_base
 from skimage.restoration import unwrap_phase
 
 def _sync_2d_phase(out:Field, field:Field, z: float):

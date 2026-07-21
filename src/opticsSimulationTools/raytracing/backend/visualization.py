@@ -860,11 +860,11 @@ def plot_pulse_front_3d(
 
     return ax
 
-def plot_spectral_phase(omega, coefficients, ray_index_flat, ax, unit="rad/s"):
+def plot_spectral_phase(omega, coefficients, ray_index_flat, ax:Axes, unit="rad/s"):
     styles = ["-", "--", ":","-."]
     coefficients = coefficients[...,ray_index_flat].T
     for coeffs in coefficients:
-        for n, coeff in enumerate(coeffs[::-1]):
+        for n, coeff in enumerate(coeffs):
             ax.plot(omega, coeff*omega**n, label=f"order={n}, coeff={coeff:.3e}", ls = styles[n])
     ax.legend()
     ax.set_xlabel(f"omega [{unit}]")

@@ -5,15 +5,63 @@ from .analysis import is_spectral_bundle, wavelengths_1d
 from scipy.constants import c as C0
 from dataclasses import dataclass
 
+
 @dataclass
 class SpectralPhaseFit:
-
     """
-    omega0: float
-    coefficients: ndarray[float] shape(n_rays, fit_order,) - phase fit coefficients in descending order (as expected by numpy)
-    omegas: np.ndarray[float] - omegas used for the fit
-    phi0, gd, gdd, tod: ndarray[float] - spectral phase parameter aquired from the coefficients
-    positions: ndarray shape(n_rays,3) - position vectors of the rays used for fitting
+    Result of a spectral phase Taylor fit.
+
+    The fitted model is
+
+        phi(omega) =
+            phi0
+            + GD  * Omega
+            + 1/2 * GDD * Omega**2
+            + 1/6 * TOD * Omega**3
+            + ...
+
+    with
+
+        Omega = omega - omega0
+
+    Coefficient convention
+    ----------------------
+    coefficients are stored in ascending physical Taylor order:
+
+        coefficients[0] = phi0    [rad]
+        coefficients[1] = GD      [s]
+        coefficients[2] = GDD     [s^2]
+        coefficients[3] = TOD     [s^3]
+        coefficients[4] = FOD     [s^4]
+        ...
+
+    Shape convention
+    ----------------
+    Low-level fit_spectral_phase output:
+
+        coefficients.shape = (order + 1, N_rays)
+        phi0.shape         = (N_rays,)
+        gd.shape           = (N_rays,)
+        gdd.shape          = (N_rays,)
+        tod.shape          = (N_rays,)
+        positions.shape    = (N_rays, 3)
+
+    After spectral_phase_fit_from_rays:
+
+        coefficients.shape = (order + 1, *ray_shape)
+        phi0.shape         = ray_shape
+        gd.shape           = ray_shape
+        gdd.shape          = ray_shape
+        tod.shape          = ray_shape
+        positions.shape    = (*ray_shape, 3)
+
+    Notes
+    -----
+    omegas stores the shifted angular frequencies
+
+        omegas = omega - omega0
+
+    in rad/s.
     """
     omega0: float
     coefficients: np.ndarray
@@ -23,6 +71,7 @@ class SpectralPhaseFit:
     gdd: np.ndarray | None = None
     tod: np.ndarray | None = None
     positions: np.ndarray | None = None
+    residual_rms: np.ndarray | None = None
 
     @property
     def gd_fs(self):
@@ -45,6 +94,39 @@ class SpectralPhaseFit:
 
 @dataclass
 class PulseFrontFit:
+    """
+    Coefficient convention
+    ----------------------
+    If include_astigmatism=False:
+
+        delay(x, y) =
+            coefficients[0]
+            + coefficients[1] * x
+            + coefficients[2] * y
+            + coefficients[3] * (x**2 + y**2)
+
+        coefficients[0] = tau0    [s]
+        coefficients[1] = tilt_x  [s/m]
+        coefficients[2] = tilt_y  [s/m]
+        coefficients[3] = pfc     [s/m^2]
+
+    If include_astigmatism=True:
+
+        delay(x, y) =
+            coefficients[0]
+            + coefficients[1] * x
+            + coefficients[2] * y
+            + coefficients[3] * x**2
+            + coefficients[4] * y**2
+            + coefficients[5] * x*y
+
+        coefficients[0] = tau0     [s]
+        coefficients[1] = tilt_x   [s/m]
+        coefficients[2] = tilt_y   [s/m]
+        coefficients[3] = curv_xx  [s/m^2]
+        coefficients[4] = curv_yy  [s/m^2]
+        coefficients[5] = curv_xy  [s/m^2]
+    """
     tau0: float
     tilt_x: float
     tilt_y: float
@@ -158,6 +240,8 @@ class SpatiotemporalSummary:
     valid: np.ndarray
     pulse_front_fit: PulseFrontFit
     omega0: float
+    phasefront_phi: np.ndarray | None = None
+    opd: np.ndarray | None = None
 
     @property
     def phi0(self):
@@ -234,39 +318,163 @@ def spectral_phase(rays: RayBundle, unwrap: bool = False):
 
 def sorted_spectral_data(rays: RayBundle, unwrap: bool = False):
     """
-    Return omega-sorted spectral phase and valid mask.
+    Return omega-sorted spectral ray data.
 
     Returns
     -------
     omega:
-        shape (N_lambda,)
+        Angular frequencies sorted ascending, shape (N_lambda,).
 
     phase:
-        shape (N_lambda, N_rays)
+        Spectral phase sorted along omega axis,
+        shape (N_lambda, *ray_shape).
+
+    weights:
+        Ray weights sorted along omega axis.
+        Usually shape (N_lambda, *ray_shape).
+
+    positions:
+        Ray positions sorted along omega axis,
+        shape (N_lambda, *ray_shape, 3).
 
     valid:
-        shape (N_lambda, N_rays)
+        Valid mask sorted along omega axis,
+        shape (N_lambda, *ray_shape).
     """
     omega = angular_frequencies(rays)
-    phase = spectral_phase(rays, unwrap=unwrap)
+    phase = np.asarray(rays.phase, dtype=float)
     valid = np.asarray(rays.valid, dtype=bool)
+    weights = np.asarray(rays.weights, dtype=float)
+    positions = np.asarray(rays.positions, dtype=float)
 
     idx = np.argsort(omega)
 
-    return omega[idx], phase[idx], rays.weights[idx], rays.positions[idx,...], valid[idx]
+    omega = omega[idx]
+    phase = phase[idx]
+    weights = weights[idx]
+    positions = positions[idx, ...]
+    valid = valid[idx]
+
+    if unwrap:
+        phase = np.unwrap(phase, axis=0)
+
+    return omega, phase, weights, positions, valid
+
+
+def _factorial(n: int) -> float:
+    out = 1.0
+    for k in range(2, n + 1):
+        out *= k
+    return out
+
+
+def spectral_taylor_matrix(
+    omega,
+    omega0: float,
+    order: int,
+    omega_scale: float = 1e15,
+):
+    """
+    Build scaled Taylor design matrix.
+
+    Model:
+        phase = sum_m beta_scaled[m] * x^m / m!
+
+    with:
+        x = (omega - omega0) / omega_scale
+
+    Physical coefficients are:
+        beta_phys[m] = beta_scaled[m] / omega_scale**m
+
+    Therefore:
+        beta_phys[0] = phi0
+        beta_phys[1] = GD
+        beta_phys[2] = GDD
+        beta_phys[3] = TOD
+    """
+    omega = np.asarray(omega, dtype=float).reshape(-1)
+    x = (omega - omega0) / omega_scale
+
+    cols = []
+    for m in range(order + 1):
+        cols.append(x**m / _factorial(m))
+
+    return np.column_stack(cols)
+
+
+def _weights_for_ray(weights, j: int, n_lambda: int):
+    """
+    Return 1D spectral weights for ray j.
+    """
+    weights = np.asarray(weights, dtype=float)
+
+    if weights.shape == ():
+        return np.full(n_lambda, float(weights))
+
+    if weights.ndim == 1:
+        if weights.size != n_lambda:
+            raise ValueError(
+                f"1D weights must have size N_lambda={n_lambda}, got {weights.size}."
+            )
+        return weights
+
+    if weights.ndim >= 2:
+        w = weights.reshape(n_lambda, -1)
+        if j >= w.shape[1]:
+            raise IndexError(f"Ray index {j} out of weights shape {w.shape}.")
+        return w[:, j]
+
+    raise ValueError(f"Unsupported weights shape {weights.shape}.")
 
 
 def fit_spectral_phase(
     omega,
     phase,
-    weights,
+    weights=None,
     valid=None,
     order: int = 2,
     omega0: float | None = None,
     omega_scale: float = 1e15,
-    positions = None    #positions of rays with center wavelength
+    positions=None,
 ) -> SpectralPhaseFit:
-    omega = np.asarray(omega, dtype=float)
+    """
+    Fit spectral phase per ray using Taylor coefficients.
+    
+
+    Model:
+        phi(omega) =
+            phi0
+            + GD * Omega
+            + 1/2 * GDD * Omega**2
+            + 1/6 * TOD * Omega**3
+            + ...
+
+    with:
+        Omega = omega - omega0
+
+    weights:
+    Optional spectral or ray-shaped weights.
+
+    Supported shapes:
+        scalar
+        (N_lambda,)
+        (N_lambda, N_rays)
+        broadcastable to phase.shape
+
+    The weights are interpreted as least-squares importance weights:
+
+        minimize sum_i weights_i * residual_i**2
+
+    Therefore sqrt(weights) is applied to both the design matrix and the target
+    phase before np.linalg.lstsq.
+
+    Returns coefficients in ascending physical Taylor order:
+        coefficients[0] = phi0
+        coefficients[1] = GD
+        coefficients[2] = GDD
+        coefficients[3] = TOD
+    """
+    omega = np.asarray(omega, dtype=float).reshape(-1)
     phase = np.asarray(phase, dtype=float)
 
     if phase.ndim != 2:
@@ -275,24 +483,30 @@ def fit_spectral_phase(
     n_lambda, n_rays = phase.shape
 
     if omega.shape != (n_lambda,):
-        raise ValueError("omega must have shape (N_lambda,).")
+        raise ValueError(
+            f"omega must have shape ({n_lambda},), got {omega.shape}."
+        )
 
     if omega0 is None:
         omega0 = float(np.mean(omega))
-
-
-    # Wichtig: dimensionslose, numerisch gut konditionierte Fitvariable
-    x = (omega - omega0) / omega_scale
 
     if valid is None:
         valid = np.isfinite(phase)
     else:
         valid = np.asarray(valid, dtype=bool) & np.isfinite(phase)
-    
-    if positions is not None:
-        positions = positions[valid[valid.shape[0]//2,...]]
+
+    if weights is None:
+        weights = np.ones_like(phase, dtype=float)
+
+    A_full = spectral_taylor_matrix(
+        omega=omega,
+        omega0=omega0,
+        order=order,
+        omega_scale=omega_scale,
+    )
 
     coeffs_scaled = np.full((order + 1, n_rays), np.nan, dtype=float)
+    residual_rms = np.full(n_rays, np.nan, dtype=float)
 
     for j in range(n_rays):
         mask = valid[:, j]
@@ -300,38 +514,69 @@ def fit_spectral_phase(
         if np.count_nonzero(mask) < order + 1:
             continue
 
-        c_desc = np.polyfit(x[mask], phase[mask, j], deg=order, w=weights[mask])
-        coeffs_scaled[:, j] = c_desc
+        y = phase[mask, j]
+        A = A_full[mask]
 
-    phi0 = coeffs_scaled[-1]
-    omega_scale_matrix = np.array([omega_scale**(i+1) for i in range(order+1)[::-1]])
+        w = _weights_for_ray(weights, j=j, n_lambda=n_lambda)[mask]
+        w = np.asarray(w, dtype=float)
 
-    gd = None
-    gdd = None
-    tod = None
+        # Weighted least squares: minimize sum w * residual**2.
+        good_w = np.isfinite(w) & (w > 0)
+        if not np.all(good_w):
+            y = y[good_w]
+            A = A[good_w]
+            w = w[good_w]
 
-    if order >= 1:
-        # dphi/domega = dphi/dx * dx/domega
-        gd = coeffs_scaled[-2] / omega_scale
+        if y.size < order + 1:
+            continue
 
-    if order >= 2:
-        # d²phi/domega² = 2*c2 / omega_scale²
-        gdd = 2.0 * coeffs_scaled[-3] / omega_scale**2
+        sqrt_w = np.sqrt(w)
+        Aw = A * sqrt_w[:, None]
+        yw = y * sqrt_w
 
-    if order >= 3:
-        # d³phi/domega³ = 6*c3 / omega_scale³
-        tod = 6.0 * coeffs_scaled[-4] / omega_scale**3
+        beta_scaled, *_ = np.linalg.lstsq(Aw, yw, rcond=None)
 
-    return SpectralPhaseFit(
+        coeffs_scaled[:, j] = beta_scaled
+
+        res = y - A @ beta_scaled
+        residual_rms[j] = np.sqrt(np.nanmean(res**2))
+
+    # Convert from scaled x = Omega / omega_scale to physical Omega.
+    scale_powers = np.array(
+        [omega_scale**m for m in range(order + 1)],
+        dtype=float,
+    )
+
+    coeffs = coeffs_scaled / scale_powers[:, None]
+
+    phi0 = coeffs[0]
+    gd = coeffs[1] if order >= 1 else None
+    gdd = coeffs[2] if order >= 2 else None
+    tod = coeffs[3] if order >= 3 else None
+
+    if positions is not None:
+        positions = np.asarray(positions, dtype=float).reshape(n_rays, 3)
+
+    fit = SpectralPhaseFit(
         omega0=omega0,
-        coefficients=coeffs_scaled/omega_scale_matrix[:, None],
-        omegas = omega-omega0,
+        coefficients=coeffs,
+        omegas=omega - omega0,
         phi0=phi0,
         gd=gd,
         gdd=gdd,
         tod=tod,
-        positions=positions #spectrally sorted positions
+        positions=positions,
     )
+
+    # Optional dynamic attribute; or add to dataclass.
+    fit.residual_rms = residual_rms
+
+    return fit
+
+
+def nearest_omega_index(omega, omega0):
+    omega = np.asarray(omega, dtype=float).reshape(-1)
+    return int(np.nanargmin(np.abs(omega - omega0)))
 
 
 def spectral_phase_fit_from_rays(
@@ -339,34 +584,57 @@ def spectral_phase_fit_from_rays(
     order: int = 2,
     unwrap: bool = False,
     omega0: float | None = None,
+    omega_scale: float = 1e15,
 ) -> SpectralPhaseFit:
     """
     Fit spectral phase of a spectral RayBundle.
 
-    Returns
-    -------
-    SpectralPhaseFit
+    This uses the same ray index across wavelengths.
+    Therefore this is a Lagrangian ray fit, not a fixed output-grid fit.
+    Notes
+    -----
+    This function fits the spectral phase for each ray index separately:
+
+        phi_j(omega)
+
+    The same ray index is compared across wavelengths. This is a Lagrangian
+    ray-coordinate analysis and is appropriate for pupil-based phase analysis,
+    element diagnostics, and pulse-front analysis in ray-label coordinates.
+
+    For a fixed observation plane field analysis, the ray data should first be
+    interpolated onto a common (x, y) grid for each omega.
     """
-    omega, phase, weights, positions_sorted, valid  = sorted_spectral_data(rays, unwrap=unwrap)
+    omega, phase, weights, positions_sorted, valid = sorted_spectral_data(
+        rays,
+        unwrap=unwrap,
+    )
+
+    if omega0 is None:
+        if getattr(rays, "omega0", None) is not None:
+            omega0 = float(np.asarray(rays.omega0).reshape(-1)[0])
+        else:
+            omega0 = float(np.mean(omega))
 
     phase_flat = phase.reshape(phase.shape[0], -1)
     valid_flat = valid.reshape(valid.shape[0], -1)
-    positions = rays.positions[rays.index_omega0,...] #positions of rays with omega0    #positions_sorted.reshape(rays.positions.shape[0], -1, 3)
+
+    i0_sorted = nearest_omega_index(omega, omega0)
+    positions = positions_sorted[i0_sorted].reshape(-1, 3)
 
     fit = fit_spectral_phase(
         omega=omega,
         phase=phase_flat,
-        weights = weights,
+        weights=weights,
         valid=valid_flat,
         order=order,
         omega0=omega0,
-        positions=positions
+        omega_scale=omega_scale,
+        positions=positions,
     )
 
     ray_shape = rays.phase.shape[1:]
 
     fit.phi0 = fit.phi0.reshape(ray_shape)
-
     fit.coefficients = fit.coefficients.reshape(
         fit.coefficients.shape[0],
         *ray_shape,
@@ -381,6 +649,12 @@ def spectral_phase_fit_from_rays(
     if fit.tod is not None:
         fit.tod = fit.tod.reshape(ray_shape)
 
+    if fit.positions is not None:
+        fit.positions = fit.positions.reshape(*ray_shape, 3)
+
+    if hasattr(fit, "residual_rms"):
+        fit.residual_rms = fit.residual_rms.reshape(ray_shape)
+
     return fit
 
 
@@ -390,24 +664,26 @@ def spectral_phase_fit_between_rays(
     order: int = 2,
     unwrap: bool = False,
     omega0: float | None = None,
+    omega_scale: float = 1e15,
 ) -> SpectralPhaseFit:
     """
     Fit spectral phase accumulated between two spectral RayBundles.
 
-    This is useful for isolating the contribution of one element
-    or one propagation segment, e.g. only the glass part.
+    The fitted phase is
 
-    Parameters
-    ----------
-    rays_before:
-        RayBundle before the segment.
+        delta_phi(omega) = phi_after(omega) - phi_before(omega)
 
-    rays_after:
-        RayBundle after the segment.
+    for each ray index.
 
-    Returns
-    -------
-    SpectralPhaseFit
+    This is useful for isolating the contribution of one element or one
+    propagation segment.
+
+    Coefficient convention
+    ----------------------
+    coefficients[0] = delta_phi0
+    coefficients[1] = delta_GD
+    coefficients[2] = delta_GDD
+    coefficients[3] = delta_TOD
     """
     if not is_spectral_bundle(rays_before):
         raise ValueError("rays_before must be spectral.")
@@ -415,31 +691,53 @@ def spectral_phase_fit_between_rays(
     if not is_spectral_bundle(rays_after):
         raise ValueError("rays_after must be spectral.")
 
-    omega = angular_frequencies(rays_after)
+    omega_before = angular_frequencies(rays_before)
+    omega_after = angular_frequencies(rays_after)
 
-    phase = np.asarray(rays_after.phase, dtype=float) - np.asarray(
-        rays_before.phase,
-        dtype=float,
+    if omega_before.shape != omega_after.shape:
+        raise ValueError("rays_before and rays_after must have the same wavelength axis.")
+
+    if not np.allclose(np.sort(omega_before), np.sort(omega_after)):
+        raise ValueError("rays_before and rays_after must contain the same wavelengths.")
+
+    omega = omega_after
+
+    phase = (
+        np.asarray(rays_after.phase, dtype=float)
+        - np.asarray(rays_before.phase, dtype=float)
     )
 
-    valid = np.asarray(rays_before.valid, dtype=bool) & np.asarray(
-        rays_after.valid,
-        dtype=bool,
+    valid = (
+        np.asarray(rays_before.valid, dtype=bool)
+        & np.asarray(rays_after.valid, dtype=bool)
+        & np.isfinite(phase)
     )
 
-    if unwrap:
-        phase = np.unwrap(phase, axis=0)
+    weights = np.asarray(rays_after.weights, dtype=float)
+    positions = np.asarray(rays_after.positions, dtype=float)
 
     idx = np.argsort(omega)
 
     omega = omega[idx]
     phase = phase[idx]
     valid = valid[idx]
-    weights = rays_before.weights[idx]
+    weights = weights[idx]
+    positions = positions[idx, ...]
+
+    if unwrap:
+        phase = np.unwrap(phase, axis=0)
+
+    if omega0 is None:
+        if getattr(rays_after, "omega0", None) is not None:
+            omega0 = float(np.asarray(rays_after.omega0).reshape(-1)[0])
+        else:
+            omega0 = float(np.mean(omega))
 
     phase_flat = phase.reshape(phase.shape[0], -1)
     valid_flat = valid.reshape(valid.shape[0], -1)
-    positions = rays_after.center_omega_postions
+
+    i0_sorted = nearest_omega_index(omega, omega0)
+    positions0 = positions[i0_sorted].reshape(-1, 3)
 
     fit = fit_spectral_phase(
         omega=omega,
@@ -448,7 +746,8 @@ def spectral_phase_fit_between_rays(
         valid=valid_flat,
         order=order,
         omega0=omega0,
-        positions=positions
+        omega_scale=omega_scale,
+        positions=positions0,
     )
 
     ray_shape = phase.shape[1:]
@@ -469,52 +768,66 @@ def spectral_phase_fit_between_rays(
     if fit.tod is not None:
         fit.tod = fit.tod.reshape(ray_shape)
 
+    if fit.positions is not None:
+        fit.positions = fit.positions.reshape(*ray_shape, 3)
+
+    if fit.residual_rms is not None:
+        fit.residual_rms = fit.residual_rms.reshape(ray_shape)
+
     return fit
 
-
-def relative_group_delay(gd, reference="center"):
+def central_spatial_value(rays: RayBundle, value):
     """
-    Convert absolute group delay map to relative group delay.
+    Return central ray value for a ray-shaped array without spectral axis.
 
-    Parameters
-    ----------
-    gd:
-        shape (N_rays,) or arbitrary ray shape.
-
-    reference:
-        "center", "mean", or numeric value.
-
-    Returns
-    -------
-    rel_gd:
-        gd - reference
+    Example:
+        gd.shape == (N_rays,)
+        returns scalar gd_center
     """
+    value = np.asarray(value, dtype=float)
+    idx = int(rays.central_ray_index)
+    return value.reshape(-1)[idx]
+
+
+def relative_group_delay_from_rays(
+    rays: RayBundle,
+    gd,
+    reference: str | float = "central_ray",
+):
     gd = np.asarray(gd, dtype=float)
 
-    if reference == "mean":
+    if reference == "central_ray":
+        ref = central_spatial_value(rays, gd)
+
+    elif reference == "mean":
         ref = np.nanmean(gd)
-    elif reference == "center":
-        ref = gd.reshape(-1)[gd.size // 2]
+
+    elif reference == "nearest_axis":
+        ref = nearest_axis_value(rays, gd)
+
     else:
         ref = float(reference)
 
     return gd - ref
 
-def relative_group_delay_to_nearest_axis(rays: RayBundle, gd):
-    """
-    Subtract group delay of ray closest to optical axis.
 
-    Uses final ray positions averaged over wavelength if spectral.
+def nearest_axis_value(rays: RayBundle, value):
     """
-    gd = np.asarray(gd, dtype=float)
-    _, _,_, _, valid = sorted_spectral_data(rays)
+    Return value of ray nearest to optical axis at omega0 or nearest omega0.
+    """
+    value = np.asarray(value, dtype=float)
 
-    if is_spectral_bundle(rays): # position of omega0 rays
-        pos = rays.positions[rays.index_omega0,...]
-        valid = np.any(valid, axis=0)
+    omega = angular_frequencies(rays)
+
+    if getattr(rays, "omega0", None) is not None:
+        omega0 = float(np.asarray(rays.omega0).reshape(-1)[0])
     else:
-        pos = rays.positions
-        valid = rays.valid
+        omega0 = float(np.mean(omega))
+
+    i0 = nearest_omega_index(omega, omega0)
+
+    pos = rays.positions[i0]
+    valid = np.any(rays.valid, axis=0)
 
     xy = pos[..., :2].reshape(-1, 2)
     valid_flat = valid.reshape(-1)
@@ -522,13 +835,9 @@ def relative_group_delay_to_nearest_axis(rays: RayBundle, gd):
     r2 = np.sum(xy**2, axis=-1)
     r2 = np.where(valid_flat, r2, np.nan)
 
-    idx0 = int(np.nanargmin(r2))
+    idx = int(np.nanargmin(r2))
 
-    gd_flat = gd.reshape(-1)
-    ref = gd_flat[idx0]
-
-    return gd - ref
-
+    return value.reshape(-1)[idx]
 
 def fit_pulse_front_quadratic(
     positions,
@@ -651,11 +960,21 @@ def fit_pulse_front_quadratic(
 def spatiotemporal_summary(
     rays: RayBundle,
     phase_order: int = 2,
-    relative_to_axis: bool = True,
+    reference: str | float = "central_ray",
     include_astigmatism: bool = False,
+    omega0: float | None = None,
+    omega_scale: float = 1e15,
 ) -> SpatiotemporalSummary:
     """
     Complete spatio-temporal analysis of a spectral RayBundle.
+
+    Steps:
+        1. Fit spectral phase per ray:
+              phi(omega) -> phi0, GD, GDD, ...
+        2. Build relative group delay:
+              rel_gd = GD - GD_ref
+        3. Fit pulse front:
+              rel_gd(x,y) = tau0 + tilt_x*x + tilt_y*y + pfc*r^2
     """
     if not is_spectral_bundle(rays):
         raise ValueError("spatiotemporal_summary requires a spectral RayBundle.")
@@ -664,6 +983,8 @@ def spatiotemporal_summary(
         rays,
         order=phase_order,
         unwrap=False,
+        omega0=omega0,
+        omega_scale=omega_scale,
     )
 
     if fit.gd is None:
@@ -671,34 +992,78 @@ def spatiotemporal_summary(
 
     gd = fit.gd
 
-    if relative_to_axis:
-        rel_gd = relative_group_delay_to_nearest_axis(rays, gd)
-    else:
-        rel_gd = gd - np.nanmean(gd)
+    rel_gd = relative_group_delay_from_rays(
+        rays=rays,
+        gd=gd,
+        reference=reference,
+    )
 
-    if not (rays.omega0 in rays.omega):
-        raise ValueError("Omega_0 not in rays.omega")
-    
-    center_omega_positions = rays.positions[rays.index_omega0,...]
+    positions = fit.positions
+    if positions is None:
+        raise ValueError("Spectral fit did not return positions.")
 
-    valid = np.any(rays.valid, axis=0) & np.isfinite(rel_gd)
+    n_valid_spectral = np.count_nonzero(np.asarray(rays.valid, dtype=bool), axis=0)
+
+    valid = (
+        np.isfinite(rel_gd)
+        & (n_valid_spectral >= phase_order + 1)
+)
 
     pulse_front_fit = fit_pulse_front_quadratic(
-        positions=center_omega_positions,
+        positions=positions,
         delay=rel_gd,
         valid=valid,
         include_astigmatism=include_astigmatism,
     )
 
+    phasefront_phi, opd = spatial_phasefront(
+        rays=rays,
+        phase_fit=fit,
+        reference=reference,
+    )
+
     return SpatiotemporalSummary(
         phase_fit=fit,
         relative_gd=rel_gd,
-        positions=fit.positions,
+        positions=positions,
         valid=valid,
         pulse_front_fit=pulse_front_fit,
         omega0=fit.omega0,
+        phasefront_phi=phasefront_phi,
+        opd=opd,
     )
 
+def spatial_phasefront(
+    rays: RayBundle,
+    phase_fit: SpectralPhaseFit,
+    reference: str | float = "central_ray",
+):
+    """
+    Return spatial phasefront at omega0.
+
+    phasefront_phi:
+        phi0(x,y) - phi0_ref in rad
+
+    opd:
+        phasefront_phi / k0(omega0) in meters
+    """
+    phi0 = np.asarray(phase_fit.phi0, dtype=float)
+
+    if reference == "central_ray":
+        phi_ref = central_spatial_value(rays, phi0)
+
+    elif reference == "mean":
+        phi_ref = np.nanmean(phi0)
+
+    else:
+        phi_ref = float(reference)
+
+    phasefront_phi = phi0 - phi_ref
+
+    k0_omega0 = phase_fit.omega0 / C0
+    opd = phasefront_phi / k0_omega0
+
+    return phasefront_phi, opd
 
 def seconds_to_fs(x):
     return np.asarray(x) * 1e15
