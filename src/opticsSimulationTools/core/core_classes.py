@@ -931,7 +931,7 @@ class RayBundle:
     
     def central_value(self, value):
         """
-        Return value at the central ray.
+        Return value at the central ray. For spectral ray give the full spectral value array and cast the wavelength desired to the return value of this function!
 
         Mono
         ----

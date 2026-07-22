@@ -43,6 +43,9 @@ axiparabola = Axiparabola.from_euler_deg(
 screen = Screen.FlatScreen((0,0,100e-2), aperture_radius=1)
 
 system = RayOpticalSystem([glass, screen])
+print("Shapes:")
+print(rays.weights.shape)
+print(rays.shape)
 
 fig, ax = plt.subplots()
 result = system.trace_and_plot_xz(
@@ -102,3 +105,4 @@ fit = st.pulse_front_fit
 fig, ax = plt.subplots(subplot_kw={"projection": "3d"})
 plot_pulse_front_3d(st.pulse_front_fit, ax)
 plt.show()
+

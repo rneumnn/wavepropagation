@@ -1,8 +1,39 @@
 import numpy as np
 from ...core.vizualizing import wavelength_to_rgb, wavelength_to_falsecolor, spatial_scale_map, temporal_scale_map
+from ...core.spectralUtils import Spectrum
 from matplotlib import colormaps
 from matplotlib.axes import Axes
 
+
+def pick_color_from_spectrum(wavelength, spectrum:Spectrum, color_style = "rgb"):
+    """Converts given wavelength to a color based on colorstyle. Similar to 'pick_color'.
+    
+    Parameters
+    ----------
+    wavelength:
+        float - Wavelength in m
+
+    spectrum:
+        Spectrum - Spectrum object used for creating the raybundle
+    
+    color_style:
+        str - "rgb" or a valid matplotlib colormap key string
+
+    Returns
+    -------
+    color:
+        tuple - valid rgb color tuple
+    """
+    wavelength = float(wavelength)
+    if color_style == "rgb":
+        return wavelength_to_rgb(wavelength)
+    elif color_style in colormaps.keys():
+        return wavelength_to_falsecolor(wavelength*1e9, 
+                                        wavelength_min_nm=spectrum.wavelengths.min()*1e9,
+                                        wavelength_max_nm=spectrum.wavelengths.max()*1e9,
+                                        cmap = color_style)
+    else:
+        raise ValueError("chosen color_style is not a valid colormap key")
 
 def plot_surface_xz(
     surface,
@@ -891,7 +922,17 @@ def plot_spectral_phase_against_radius(st:SpectralPhaseFit, ax:Axes, spatial_uni
     ax.set_ylabel(f"{phase_parameter} [{plotable_parameters[phase_parameter]}]")
     ax.legend()
 
+def plot_relative_phase(raystraceResult, ax:Axes, color_style = "rgb"):
+    for i, l in enumerate(raystraceResult.rays.wavelength):
+        ax.plot(
+            raystraceResult.history[0].radius[i,...]/raystraceResult.history[0].radius.max(),
+            -raystraceResult.rays.phase[i,...]+raystraceResult.rays.central_value(
+                value = raystraceResult.rays.phase
+            )[i],
+            #result.rays.phase[result.rays.central_beam_index][i]-result.rays.phase[i,...],
+            "x", label = f"{(float(l)*1e9):.2f} nm sim", 
+            color = pick_color(float(l),raystraceResult.rays.wavelength,color_style)
+        )
 
-
-    
-  
+    ax.set_xlabel("normalized entrence-pupile radius")
+    ax.set_ylabel("relative phase [rad]")

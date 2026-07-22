@@ -90,8 +90,7 @@ class SpectralPhaseFit:
         if self.tod is None:
             return None
         return self.tod * 1e45
-
-
+    
 @dataclass
 class PulseFrontFit:
     """
