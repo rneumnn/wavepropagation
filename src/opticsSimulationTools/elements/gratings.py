@@ -14,7 +14,7 @@ from ..core.core_classes import (
     Surface,
 )
 
-from ..raytracing.propagation import propagate_to_surface
+from ..raytracing.backend.propagation import propagate_to_surface
 
 from ..raytracing.backend.calculations import (
     refract_rays,
