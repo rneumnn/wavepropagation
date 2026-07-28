@@ -1,9 +1,11 @@
 import numpy as np
 
 from ...core.core_classes import RayBundle
-from .analysis import is_spectral_bundle, wavelengths_1d
+from ...core.helpers import TimeReference
+from .analysis import is_spectral_bundle, wavelengths_1d, FocalVelocityResult, radial_bin_average
 from scipy.constants import c as C0
 from dataclasses import dataclass
+
 
 
 @dataclass
@@ -1085,3 +1087,327 @@ def tilt_to_fs_per_mm(tilt_si):
     """
     return np.asarray(tilt_si) * 1e12
     
+
+def focal_velocity_from_relative_gd(
+    rays: RayBundle,
+    relative_gd,
+    omega0: float | None = None,
+    n_bins: int = 200,
+    forward_only: bool = True,
+    time_reference:str = TimeReference.GD_WITH_OPL,
+    n_group_final=None,
+) -> FocalVelocityResult:
+    """
+    Compute focal velocity at omega0 using a relative group-delay map.
+
+    This is the spatiotemporal focal velocity:
+
+        t_focus(ray) =
+            relative_gd(ray)
+            + n_g * s_focus(ray) / c
+
+    where:
+        relative_gd(ray):
+            Relative group delay at the current ray state, usually obtained from
+            the spectral phase fit:
+
+                GD = d phi / d omega at omega0
+
+        s_focus(ray):
+            Geometrical distance from the current ray position to the point of
+            closest approach to the global z-axis.
+
+        n_g:
+            Group index of the final propagation medium. If n_group_final is
+            None, the current refractive index rays.n at omega0 is used as an
+            approximation.
+
+    Parameters
+    ----------
+    rays:
+        Spectral RayBundle after the focusing element.
+
+    relative_gd:
+        Ray-shaped relative group delay at omega0.
+
+        Shape:
+            rays.shape[1:]
+
+        Units:
+            seconds
+
+    omega0:
+        Angular frequency where the geometry is evaluated.
+        If None, rays.omega0 is used if available; otherwise the mean omega is used.
+
+    n_bins:
+        Number of radial bins.
+
+    forward_only:
+        If True, only closest-axis points with ray parameter t >= 0 are accepted.
+
+    n_group_final:
+        Optional group index for the final propagation segment.
+
+        Can be:
+            None
+            scalar
+            array broadcastable to ray_shape
+
+        If None, the phase refractive index rays.n at omega0 is used.
+
+    Returns
+    -------
+    FocalVelocityResult
+
+    Notes
+    -----
+    This evaluates the ray geometry only at omega0.
+
+    It does not compute a separate focal velocity for each wavelength. The
+    spectral information enters only through relative_gd, i.e. through the
+    fitted spectral phase derivative at omega0.
+    """
+    if not is_spectral_bundle(rays):
+        raise ValueError(
+            "focal_velocity_from_relative_gd requires a spectral RayBundle."
+        )
+
+    wavelengths = wavelengths_1d(rays)
+    omega = 2.0 * np.pi * C0 / wavelengths
+
+    if omega0 is None:
+        if getattr(rays, "omega0", None) is not None:
+            omega0 = float(np.asarray(rays.omega0).reshape(-1)[0])
+        else:
+            omega0 = float(np.mean(omega))
+
+    i0 = int(np.nanargmin(np.abs(omega - omega0)))
+    wavelength0 = float(wavelengths[i0])
+
+    # Build a monochromatic view of the omega0 geometry.
+    sub = monochromatic_slice_from_spectral_rays(rays, i0, wavelength0)
+
+    relative_gd = np.asarray(relative_gd, dtype=float)
+
+    return _focal_velocity_mono_with_extra_delay(
+        sub, relative_gd,
+        forward_only=forward_only,
+        time_reference=time_reference, n_bins=n_bins, n_group_final=n_group_final
+    )
+
+def focal_velocity_from_phase_fit(
+    rays: RayBundle,
+    phase_fit:SpectralPhaseFit,
+    reference: str | float = "central_ray",
+    n_bins: int = 200,
+    forward_only: bool = True,
+    n_group_final=None,
+    time_reference:str = TimeReference.GD_WITH_OPL,
+) -> FocalVelocityResult:
+    """
+    Compute focal velocity from a fitted spectral phase.
+    The way that works is:
+        -Fit plane GD after the Optical System that applies GD. take into account the focussing optic if needed!.
+        -Use the OPL to the focussing optic
+        -> in terms of axiparobola it leeds to: Plane fit plane infront of axiparabola for GD, Axiparabola plane for evaluationg the OPD!
+
+    Uses:
+        GD(x, y) = d phi / d omega at omega0
+
+    and computes:
+        relative_gd = GD - GD_ref
+
+    Then evaluates focal velocity from the omega0 ray geometry.
+    """
+    if phase_fit.gd is None:
+        raise ValueError(
+            "phase_fit.gd is None. Fit order must be >= 1 to compute GD."
+        )
+
+    relative_gd = relative_group_delay_from_rays(
+        rays=rays,
+        gd=phase_fit.gd,
+        reference=reference,
+    )
+
+    return focal_velocity_from_relative_gd(
+        rays=rays,
+        relative_gd=relative_gd,
+        omega0=phase_fit.omega0,
+        n_bins=n_bins,
+        forward_only=forward_only,
+        n_group_final=n_group_final,
+        time_reference=time_reference
+    )
+
+def monochromatic_slice_from_spectral_rays(
+    rays: RayBundle,
+    i0: int,
+    wavelength0: float,
+) -> RayBundle:
+    """
+    Build a clean monochromatic RayBundle from spectral ray data.
+    """
+    positions = np.asarray(rays.positions[i0], dtype=float)
+    directions = np.asarray(rays.directions[i0], dtype=float)
+    valid = np.asarray(rays.valid[i0], dtype=bool)
+
+    opl = np.asarray(rays.opl[i0], dtype=float)
+    phase = np.asarray(rays.phase[i0], dtype=float)
+
+    weights = np.asarray(rays.weights, dtype=float)
+
+    if weights.ndim >= 2:
+        weights0 = weights.reshape(weights.shape[0], -1)[i0]
+        weights0 = weights0.reshape(valid.shape)
+    elif weights.ndim == 1:
+        weights0 = np.full(valid.shape, weights[i0], dtype=float)
+    else:
+        weights0 = float(weights)
+
+    n_medium = rays.n_medium
+
+    if callable(n_medium):
+        n_medium0 = n_medium
+    else:
+        n_medium_arr = np.asarray(n_medium)
+        if n_medium_arr.shape != ():
+            n_medium0 = np.asarray(n_medium_arr.reshape(-1)[i0])
+        else:
+            n_medium0 = float(n_medium_arr)
+
+    return RayBundle(
+        positions=positions,
+        directions=directions,
+        wavelength=float(wavelength0),
+        weights=weights0,
+        opl=opl,
+        phase=phase,
+        valid=valid,
+        n_medium=n_medium0,
+        spectrum=None,
+        add_central_ray=False,
+    )
+
+def _focal_velocity_mono_with_extra_delay(
+    rays: RayBundle,
+    extra_delay:np.ndarray,
+    forward_only: bool = True,
+    time_reference:str = TimeReference.GD_WITH_OPL,
+    n_bins: int = 200,
+    n_group_final=None,
+):
+    focus_points, t_geo, focus_valid = rays.points_closest_to_z(
+        forward_only=forward_only
+    )
+
+    radius = np.sqrt(
+        rays.positions[..., 0] ** 2
+        + rays.positions[..., 1] ** 2
+    )
+
+    z_focus_ray = focus_points[..., 2]
+
+    extra_delay = np.asarray(extra_delay, dtype=float)
+    if extra_delay.shape != rays.shape:
+        extra_delay = np.broadcast_to(extra_delay, rays.shape)
+
+    if n_group_final is None:
+        n_g = rays.to_ray_shape(rays.n)
+    else:
+        n_g = np.asarray(n_group_final, dtype=float)
+        n_g = np.broadcast_to(n_g, rays.shape)
+
+    if time_reference == TimeReference.GD_WITH_OPL:
+        # Total arrival time from accumulated OPL plus final segment.
+        #
+        # OPL convention:
+        #   rays.opl = accumulated optical path length before this final free segment
+        #
+        # final contribution:
+        #   n_current * t_geo
+        t_start = rays.opl / C0
+        t_segment_to_focus =  n_g * t_geo / C0
+    elif time_reference == TimeReference.GD_ONLY:
+        # Relative time only from current ray plane to z-axis closest point.
+        # This is useful if rays are initialized immediately after the element
+        # with equal phase/OPL.
+        t_start = 0
+        t_segment_to_focus = n_g * t_geo / C0
+    else:
+        raise ValueError("given time_reference not valid for this function")
+
+    t_focus_ray = extra_delay + t_start + t_segment_to_focus
+
+    valid = (
+        rays.valid
+        & focus_valid
+        & np.isfinite(radius)
+        & np.isfinite(z_focus_ray)
+        & np.isfinite(t_focus_ray)
+    )
+
+    r_z, z_binned = radial_bin_average(
+        radius=radius,
+        values=z_focus_ray,
+        valid=valid,
+        n_bins=n_bins,
+    )
+
+    r_t, t_binned = radial_bin_average(
+        radius=radius,
+        values=t_focus_ray,
+        valid=valid,
+        n_bins=n_bins,
+    )
+
+    n = min(r_z.size, r_t.size)
+
+    r = r_z[:n]
+    z = z_binned[:n]
+    t = t_binned[:n]
+
+    if r.size < 3:
+        dz_dr = np.full_like(r, np.nan)
+        dt_dr = np.full_like(r, np.nan)
+        dz_dt = np.full_like(r, np.nan)
+    else:
+        dz_dr = np.gradient(z, r)
+        dt_dr = np.gradient(t, r)
+
+        dz_dt = np.divide(
+            dz_dr,
+            dt_dr,
+            out=np.full_like(dz_dr, np.nan, dtype=float),
+            where=np.abs(dt_dr) > 1e-30,
+        )
+
+    valid_bins = np.isfinite(r) & np.isfinite(z) & np.isfinite(t)
+
+    return FocalVelocityResult(
+        radius=r,
+        z_focus=z,
+        t_focus=t,
+        dz_dr=dz_dr,
+        dt_dr=dt_dr,
+        dz_dt=dz_dt,
+        valid=valid_bins,
+        wavelength=None,
+    )
+
+def spectral_focal_velocity(
+        rays:RayBundle,
+        gd_fit_plane_rays:RayBundle,
+        n_bins: int = 200,
+        forward_only: bool = True,
+        n_group_final=None,
+        reference="central_ray",
+        include_astigmatism = False,
+        time_reference = TimeReference.GD_WITH_OPL,
+        **kwargs
+    ):
+    """Convenience Function for obtaining spectral focal velocitys by ray index from rays and gd_fit_plane_rays. Check documentation of 'focal_velocity_from_phasefit'."""
+    
+    st = spatiotemporal_summary(gd_fit_plane_rays,include_astigmatism=include_astigmatism, **kwargs)
+    return focal_velocity_from_phase_fit(rays, phase_fit=st.phase_fit,reference=reference,n_bins=n_bins, forward_only=forward_only, n_group_final=n_group_final, time_reference=time_reference)

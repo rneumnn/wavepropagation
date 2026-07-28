@@ -57,6 +57,7 @@ class Screen(element_base):
         parent=None,
         surface: Surface | None = None,
         n_environment=None,
+        custom_name:str = None
     ):
         super().__init__(
             radial_symmetric=radial_symmetric,
@@ -64,6 +65,7 @@ class Screen(element_base):
             rotation=rotation,
             parent=parent,
             n_environment=n_environment,
+            custom_name=custom_name
         )
 
         self.surface = surface
@@ -114,7 +116,7 @@ class Screen(element_base):
         rotation=None,
         parent=None,
         aperture_radius=None,
-        **kwargs,
+        custom_name:str = None
     ):
         """
         Create a flat observation screen.
@@ -137,7 +139,7 @@ class Screen(element_base):
             center_position=center_position,
             rotation=rotation,
             parent=parent,
-            **kwargs,
+            custom_name=custom_name,
         )
 
         surface = PlaneSurface(
@@ -164,7 +166,7 @@ class Screen(element_base):
         rz_deg: float = 0.0,
         order: str = "zyx",
         parent=None,
-        **kwargs,
+        custom_name:str = None,
     ):
         """
         Create a flat screen from Euler angles in degrees.
@@ -182,5 +184,5 @@ class Screen(element_base):
             rotation=rotation,
             parent=parent,
             aperture_radius=aperture_radius,
-            **kwargs,
+            custom_name=custom_name,
         )

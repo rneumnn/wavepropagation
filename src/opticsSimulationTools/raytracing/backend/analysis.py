@@ -4,6 +4,7 @@ from ...core.core_classes import RayBundle
 from ...core.vizualizing import spatial_scale_map, temporal_scale_map, wavelength_to_rgb, wavelength_to_falsecolor
 from .visualization import pick_color
 from matplotlib import pyplot as plt
+from ...core.helpers import TimeReference
 from scipy.constants import  c as c0
 
 
@@ -575,7 +576,7 @@ class FocalVelocityResult:
 
     @property
     def dz_dt_over_c(self):
-        return self.dz_dt / 299_792_458.0
+        return self.dz_dt / c0
 
     @property
     def t_focus_fs(self):
@@ -673,10 +674,11 @@ def _focal_velocity_mono(
     rays: RayBundle,
     forward_only: bool = True,
     n_bins: int = 200,
-    use_opl_time: bool = False,
+    time_reference: str = TimeReference.OPL,
 ):
     """
     Focal velocity analysis for a monochromatic RayBundle.
+    rays: RayBundle at focusing element
     """
     focus_points, t_geo, focus_valid = rays.points_closest_to_z(forward_only=forward_only)
 
@@ -686,7 +688,8 @@ def _focal_velocity_mono(
 
     z_focus_ray = focus_points[..., 2]
 
-    if use_opl_time:
+    n_current = rays.to_ray_shape(rays.n)
+    if time_reference == TimeReference.OPL:
         # Total arrival time from accumulated OPL plus final segment.
         #
         # OPL convention:
@@ -694,20 +697,23 @@ def _focal_velocity_mono(
         #
         # final contribution:
         #   n_current * t_geo
-        n_current = rays.to_ray_shape(rays.n)
-        opl_focus = rays.opl + n_current * t_geo
-        t_focus_ray = opl_focus / 299_792_458.0
-    else:
+        
+        t_start = rays.opl/c0
+        t_segment_to_focus = n_current*t_geo / c0
+    elif time_reference == TimeReference.LOCAL:
         # Relative time only from current ray plane to z-axis closest point.
         # This is useful if rays are initialized immediately after the element
         # with equal phase/OPL.
-        n_current = rays.to_ray_shape(rays.n)
-        t_focus_ray = n_current * t_geo / 299_792_458.0
+        t_start = 0
+        t_segment_to_focus = n_current * t_geo / c0
+    else:
+        raise ValueError("value for time_reference is not valid for this function!")
+    t_focus = t_start + t_segment_to_focus
 
     valid = rays.valid & focus_valid
     valid &= np.isfinite(radius)
     valid &= np.isfinite(z_focus_ray)
-    valid &= np.isfinite(t_focus_ray)
+    valid &= np.isfinite(t_focus)
 
     r_z, z_binned = radial_bin_average(
         radius=radius,
@@ -718,7 +724,7 @@ def _focal_velocity_mono(
 
     r_t, t_binned = radial_bin_average(
         radius=radius,
-        values=t_focus_ray,
+        values=t_focus,
         valid=valid,
         n_bins=n_bins,
     )
@@ -762,7 +768,7 @@ def focal_velocity(
     rays: RayBundle,
     forward_only: bool = True,
     n_bins: int = 200,
-    use_opl_time: bool = False,
+    time_reference: str = TimeReference.OPL,
 ) -> FocalVelocityResult:
     """
     Compute focal trajectory and focal velocity of a ray bundle.
@@ -790,12 +796,12 @@ def focal_velocity(
     n_bins:
         Number of radial bins.
 
-    use_opl_time:
-        If False:
+    time_reference:
+        If "local":
             t_f is computed only from the current ray position to the closest
             point on the z-axis.
 
-        If True:
+        If "opd"":
             t_f uses the accumulated optical path length rays.opl plus the final
             propagation segment to the closest point.
 
@@ -825,7 +831,7 @@ def focal_velocity(
             rays=rays,
             forward_only=forward_only,
             n_bins=n_bins,
-            use_opl_time=use_opl_time,
+            time_reference=time_reference,
         )
 
     wavelengths = wavelengths_1d(rays)
@@ -847,7 +853,7 @@ def focal_velocity(
             rays=sub,
             forward_only=forward_only,
             n_bins=n_bins,
-            use_opl_time=use_opl_time,
+            time_reference=time_reference,
         )
 
         results.append(res_i)

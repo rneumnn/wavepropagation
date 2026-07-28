@@ -5,14 +5,24 @@ from opticsSimulationTools.core import spectralUtils
 from opticsSimulationTools.raytracing.backend.analysis import is_spectral_bundle, focal_velocity, on_axis_intensity_profile, focal_line_intensity_profile
 from opticsSimulationTools.raytracing.backend.visualization import plot_focal_trajectory, plot_focal_velocity, plot_focus_time
 from opticsSimulationTools.core.spectralUtils import gaussian_spectrum_omega
+from opticsSimulationTools.raytracing import frontend as rt
 from scipy.constants import c as C0
 import numpy as np
 from matplotlib import pyplot as plt
 from scipy.integrate import cumulative_trapezoid
 
-r = 50e-3 #m
-f0 = 500e-3
-d = 1e-2
+# axi = Axiparabola(
+#     F0=230e-3,
+#     L = -30e-3,
+#     aperture_radius=76.2e-3/2,
+#     center_position=(0,0,820e-3), 
+#     unfold=0,
+#     apply_aperture=True
+# )
+
+r = 76.2e-3/2 #m
+f0 = 230e-3
+d = -3e-2
 
 z_axi = 20e-2
 
@@ -34,10 +44,14 @@ def sag_general_n(R, f):
     return sag-np.min(sag)
     
 Laser = RayBundle.collimated_line(
-    x = np.linspace(-r, r, 20000),
+    x = np.linspace(-30e-3, 30e-3, 2000),
     z = 0,
     wavelength=800e-9,
-    #spectrum=gaussian_spectrum_omega(800e-9, 40e-9, 3)
+)
+Laser_spec = RayBundle.collimated_line_spectral(
+    x = np.linspace(-30e-3, 30e-3, 2000),
+    z = 0,
+    spectrum=gaussian_spectrum_omega(800e-9, 40e-9, 21)
 )
 # Laser = RayBundle.collimated_polar(
 #     np.linspace(0, r, 2000),
@@ -50,33 +64,41 @@ axi = Axiparabola.from_euler_deg(
     f0, d, r, (0,0,z_axi), unfold=0
 )
 
-screen = Screen.FlatScreen((0,0,-30.1e-2), aperture_radius=r)
+
+
+screen = Screen.FlatScreen((0,0,-10e-2), aperture_radius=r)
+measureScreen = Screen.FlatScreen((0,0,2e-3), aperture_radius=r*1.2, custom_name = "MP")
 
 fig, ax = plt.subplots()
-optical_system = RayOpticalSystem([axi, screen])
+optical_system = RayOpticalSystem([measureScreen, axi, screen])
 result = optical_system.trace_and_plot_xz(Laser, ax=ax)
 #plt.show()
 
 print(result.surface_history)
-res = result.history[-2]
+res = result.get_rays_by_element_by_name("Axiparabola_1")[-1]
 z,t, valid = res.points_closest_to_z(atol = 1e-18)
-plt.figure()
-plt.title("Axiparabola debugging")
-plt.plot(res.radius[valid], z[...,2][valid], 'bo',label = "z from function")
-plt.plot(res.radius[~valid], z[...,2][~valid], 'rx')
-plt.plot(res.radius[valid], z_axi-f_axi(result.history[-2].radius[valid]), 'gx', label = "theory f")
+# plt.figure()
+# plt.title("Axiparabola debugging")
+# plt.plot(res.radius[valid], z[...,2][valid], 'bo',label = "z from function")
+# plt.plot(res.radius[~valid], z[...,2][~valid], 'rx')
+# plt.plot(res.radius[valid], z_axi-f_axi(result.history[-2].radius[valid]), 'gx', label = "theory f")
 
-plt.xlabel("Radius [m]")
-plt.ylabel("Z [m]")
-plt.legend()
+# plt.xlabel("Radius [m]")
+# plt.ylabel("Z [m]")
+# plt.legend()
+
+# plt.figure()
+# plt.title("Axiparabola debugging Sag function")
+# plt.plot(res.radius.T, axi.surfaces[0].surface_function(res.positions[...,0], res.positions[...,1]).T, 'bx', label = "axi sag")
+# plt.plot(res.radius.T, -sag_general_n(res.radius, f_axi(res.radius)).T, 'rx', label = "theory sag")
+# plt.xlabel("Radius [m]")
+# plt.ylabel("Sag [m]")
+# plt.legend()
 
 plt.figure()
-plt.title("Axiparabola debugging Sag function")
-plt.plot(res.radius.T, axi.surfaces[0].surface_function(res.positions[...,0], res.positions[...,1]).T, 'bx', label = "axi sag")
-plt.plot(res.radius.T, -sag_general_n(res.radius, f_axi(res.radius)).T, 'rx', label = "theory sag")
-plt.xlabel("Radius [m]")
-plt.ylabel("Sag [m]")
-plt.legend()
+result_spec = optical_system.trace_and_plot_xz(Laser_spec, ax=plt.gca(), color_style="plasma")
+plt.show()
+e = result_spec.get_rays_by_element_by_name("Axiparabola_1")[-1]
 
 #plt.show()
 # plt.figure()
@@ -88,28 +110,55 @@ print(np.sum(valid_float))
 # plt.figure()
 # plt.plot(res.radius, np.where(valid, 1, 0), 'x')
 # plt.show()
-fv = focal_velocity(result.history[-2], use_opl_time=True, n_bins = 1000)
+fv = focal_velocity(res, use_opl_time=True, n_bins = 1000)
 
+#spectral
+st = rt.spatiotemporal.spatiotemporal_summary(result_spec.get_rays_by_element_by_name("Axiparabola_1")[-1])
+fv_spec = rt.spatiotemporal.focal_velocity_from_phase_fit(e, st.phase_fit, n_bins=1000, use_opl_time = False)
+fv_spec = rt.spatiotemporal.focal_velocity_from_relative_gd(e, relative_gd = st.gd, n_bins=1000, use_opl_time=False)
+plt.figure()
+plt.plot(res.positions[...,2], res.positions[...,0], '*')
+plt.plot(e.positions[...,2], e.positions[...,0],"x")
+plt.xlabel("z"
+           )
+plt.ylabel("x")
+plt.show()
 
-# plt.figure()
-# plot_focal_velocity(fv, ax=plt.gca())
-# plt.show()
+plt.figure()
+plt.title("relative GD (should be 0)")
+plt.plot(result_spec.get_rays_by_element_by_custom_name("MP")[-1].radius[0], st.relative_gd*1e-15)
+plt.xlabel("radius")
+plt.ylabel("gd[fs]")
+plt.show()
 
-# plt.figure()
-# plot_focus_time(fv, ax=plt.gca())
-# plt.show()
+plt.figure()
+plot_focal_velocity(fv, ax=plt.gca())
+plt.show()
+
+plt.figure()
+plot_focus_time(fv, ax=plt.gca())
+plt.gca().plot(fv_spec.radius_mm, fv_spec.t_focus_fs,"x", label = "spectral")
+plt.gca().plot(fv.radius_mm, fv.t_focus_fs, "+", label = "mono")
+plt.gca().plot(fv_spec.radius_mm, fv.t_focus_fs/fv_spec.t_focus_fs, label = "normalized")
+plt.gca().plot(fv_spec.radius_mm, fv.t_focus_fs-fv_spec.t_focus_fs, ":",label="relative")
+plt.legend()
+plt.show()
 
 plt.figure()
 plot_focal_trajectory(fv, ax=plt.gca())
+plt.gca().plot(fv_spec.radius_mm, fv_spec.z_focus_mm, "x", label="Spectral")
+plt.legend()
+plt.show()
 
 plt.figure()
-plt.plot(fv.radius.T, v_f_of_r(fv.radius.T)/C0, 'x', label = "theory")
-plt.plot(fv.radius.T, (-fv.dz_dt/C0).T, '-', label = "simulation")
-plt.xlabel("Radius [m]")
+plt.plot(axi.f_r(fv.radius.T), -v_f_of_r(fv.radius.T)/C0, 'x', label = "theory")
+plt.plot(axi.f_r(fv.radius.T), fv.dz_dt_over_c, '-', label = "simulation mono")
+plt.plot(axi.f_r(fv_spec.radius.T), fv_spec.dz_dt_over_c, ':', label = "simulation spectral")
+plt.xlabel("focal position [m]")
 plt.ylabel("Focal Velocity [c0]")
 plt.legend()
 ax2 = plt.gca().twinx()
-ax2.plot(fv.radius.T, (-fv.dz_dt.T-v_f_of_r(fv.radius.T))/(-fv.dz_dt.T), '--r', label = "relative error")
+ax2.plot(axi.f_r(fv.radius.T), (-fv.dz_dt.T-v_f_of_r(fv.radius.T))/(-fv.dz_dt.T), '--r', label = "relative error")
 plt.legend(loc = "lower right")
 # plt.show()
 

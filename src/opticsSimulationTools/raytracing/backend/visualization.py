@@ -702,6 +702,7 @@ def plot_focal_velocity(result: FocalVelocityResult, ax, velocity_unit="c", radi
             ax.plot(
                 r[i] * r_scale,
                 v[i],
+                marker = "x",
                 label=f"{wl * 1e9:.1f} nm",
             )
 

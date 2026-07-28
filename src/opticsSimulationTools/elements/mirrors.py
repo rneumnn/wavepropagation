@@ -537,6 +537,15 @@ class Axiparabola(Mirror):
             set_surface_parent=True,
         )
 
+    def f_r(self,r):
+        """Returns the Focal-length as a function of r"""
+        return self.F0+self.L*(r**2/self.aperture_radius**2)
+    
+    def z_r(self, r):
+        """returns the theoretical focalposition taking account global coordinates for plain geometries with self.center_position == (0, 0, z) and no rotation"""
+        return self.f_r(r)+self.center_position[-1]
+
+
     @staticmethod
     def sag_function_axiparabola(F0, L, RMAX):
         """

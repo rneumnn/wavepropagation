@@ -223,9 +223,12 @@ screen = rt.Screen.FlatScreen(
 )
 
 
-system = rt.RayOpticalSystem([lens1, d1, d2, lens2, screen])
+system = rt.RayOpticalSystem([
+    lens1,
+   # d1, d2, 
+    lens2, screen])
 spectrum = rt.from_wavelength_list(np.array([790,800,810])*1e-9)
-#spectrum = rt.gaussian_spectrum_omega(800e-9, 30e-9, num = 21)
+spectrum = rt.gaussian_spectrum_omega(800e-9, 30e-9, num = 21)
 laser = rt.RayBundle.collimated_line_spectral(
     np.linspace(-r,r,N_rays),
     0,
@@ -237,42 +240,49 @@ fig,ax = plt.subplots()
 result = system.trace_and_plot_xz(rays=laser, ax = ax, max_rays=10000, color_style="plasma", wavelength_indizes="all")
 plt.show()
 
-# #st_summary = rt.spatiotemporal.spatiotemporal_summary(result.rays, phase_order=3)
-# fig,ax = plt.subplots()
-# #rt.plot_spectral_phase_against_radius(st= st_summary, ax = ax, phase_parameter="phi0")
-# print(result.rays.central_beam_index)
-# print(result.rays.wavelength)
-# lens1_opl = result.opl_gain_for_element(lens1)
-# lens2_opl = result.opl_gain_for_element(lens2)
-# elementopl = result.opl_gain_all_elements()
-# lens1_phase = result.phase_gain_for_element(lens1)
-# lens2_phase = result.phase_gain_for_element(lens2)
-# elementphase_single, elementphase, names = result.phase_gain_all_elements()
-# #ax.plot(result.history[0].radius[0,...]/r,result.rays.phase[result.rays.central_beam_index][0]-result.rays.phase[0,...],"x", label = "790 sim")
-# #ax.plot(result.history[0].radius[1,...]/r,result.rays.phase[result.rays.central_beam_index][result.rays.index_omega0]-result.rays.phase[1,...],"x", label = "800 sim")
-# #ax.plot(result.history[0].radius[2,...]/r, result.rays.phase[result.rays.central_beam_index][-1]-result.rays.phase[2,...], "x", label = "810 sim")
-# print(laser.wavelength)
-# from opticsSimulationTools.raytracing.backend.visualization import pick_color_from_spectrum, plot_relative_phase
-# # for i, l in enumerate(laser.wavelength):
-# #     ax.plot(
-# #         result.history[0].radius[i,...]/r,
-# #         -result.rays.phase[i,...]+result.rays.central_value(
-# #             value = result.rays.phase
-# #         )[i],
-# #         #result.rays.phase[result.rays.central_beam_index][i]-result.rays.phase[i,...],
-# #         "x", label = f"{(float(l)*1e9):.2f} nm sim", 
-# #         color = pick_color_from_spectrum(float(l), spectrum, color_style="plasma")
-# #     )
-# plot_relative_phase(result, ax, "plasma")
-# ax.plot(puple, wl_790, label = "790 zemax")
-# ax.plot(puple, wl_800, label = "800 zemax")
-# ax.plot(puple, wl_810, label = "810 zemax")
-# # ax.plot(result.rays.radius[0,...]/result.rays.radius[0,...].max(), elementphase[0,...]-elementphase[0, result.rays.central_beam_index[0,-1]],".:", label = "790 sim element only")
-# # ax.plot(result.rays.radius[1,...]/result.rays.radius[1,...].max(), elementphase[1,...]-elementphase[1, result.rays.central_beam_index[result.rays.index_omega0,-1]],".:", label = "800 sim e.o")
-# # ax.plot(result.rays.radius[2,...]/result.rays.radius[2,...].max(), elementphase[2,...]-elementphase[2, result.rays.central_beam_index[2,-1]], ".:", label = "810 sim e.o.")
+#st_summary = rt.spatiotemporal.spatiotemporal_summary(result.rays, phase_order=3)
+fig,ax = plt.subplots()
+#rt.plot_spectral_phase_against_radius(st= st_summary, ax = ax, phase_parameter="phi0")
+print(result.rays.central_beam_index)
+print(result.rays.wavelength)
+lens1_opl = result.opl_gain_for_element(lens1)
+lens2_opl = result.opl_gain_for_element(lens2)
+elementopl = result.opl_gain_all_elements()
+lens1_phase = result.phase_gain_for_element(lens1)
+lens2_phase = result.phase_gain_for_element(lens2)
+elementphase_single, elementphase, names = result.phase_gain_all_elements()
+#ax.plot(result.history[0].radius[0,...]/r,result.rays.phase[result.rays.central_beam_index][0]-result.rays.phase[0,...],"x", label = "790 sim")
+#ax.plot(result.history[0].radius[1,...]/r,result.rays.phase[result.rays.central_beam_index][result.rays.index_omega0]-result.rays.phase[1,...],"x", label = "800 sim")
+#ax.plot(result.history[0].radius[2,...]/r, result.rays.phase[result.rays.central_beam_index][-1]-result.rays.phase[2,...], "x", label = "810 sim")
+print(laser.wavelength)
+from opticsSimulationTools.raytracing.backend.visualization import pick_color_from_spectrum, plot_relative_phase
+# for i, l in enumerate(laser.wavelength):
+#     ax.plot(
+#         result.history[0].radius[i,...]/r,
+#         -result.rays.phase[i,...]+result.rays.central_value(
+#             value = result.rays.phase
+#         )[i],
+#         #result.rays.phase[result.rays.central_beam_index][i]-result.rays.phase[i,...],
+#         "x", label = f"{(float(l)*1e9):.2f} nm sim", 
+#         color = pick_color_from_spectrum(float(l), spectrum, color_style="plasma")
+#     )
+plot_relative_phase(result, ax, "plasma")
+ax.plot(puple, wl_790, label = "790 zemax")
+ax.plot(puple, wl_800, label = "800 zemax")
+ax.plot(puple, wl_810, label = "810 zemax")
+# ax.plot(result.rays.radius[0,...]/result.rays.radius[0,...].max(), elementphase[0,...]-elementphase[0, result.rays.central_beam_index[0,-1]],".:", label = "790 sim element only")
+# ax.plot(result.rays.radius[1,...]/result.rays.radius[1,...].max(), elementphase[1,...]-elementphase[1, result.rays.central_beam_index[result.rays.index_omega0,-1]],".:", label = "800 sim e.o")
+# ax.plot(result.rays.radius[2,...]/result.rays.radius[2,...].max(), elementphase[2,...]-elementphase[2, result.rays.central_beam_index[2,-1]], ".:", label = "810 sim e.o.")
 
-# ax.legend()
-# plt.show()
+ax.legend()
+plt.show()
+
+st = rt.spatiotemporal.spatiotemporal_summary(result.rays)
+fig, ax = plt.subplots()
+ax.set_xlabel("radius [m]")
+ax.set_ylabel("rel gd [fs]")
+ax.plot(result.rays.radius[result.rays.index_omega0], st.relative_gd*1e15, 'x')
+plt.show()
 
 # from pathlib import Path
 
@@ -303,7 +313,7 @@ plt.show()
 #     n= rt.N_SF5.n_function,
 #     aperture=r*5
 # )
-# positions_z = (50e-3, 150e-3, 250e-3, 350e-3, 450e-3, 550e-3, 650e-3, 720e-3)
+positions_z = (50e-3, 150e-3, 250e-3, 350e-3, 450e-3, 550e-3, 650e-3, 720e-3)
 # system = rt.RayOpticalSystem(elements=[lens1, d1, d2, lens2, screen])
 
 # fig, ax_cumu = plt.subplots(1,2)
@@ -311,27 +321,33 @@ plt.show()
 # ax_cumu[1].set_ylabel("relative GDD (fs)")
 # ax_cumu[0].set_ylabel("relative phase [rad]")
 # ax_cumu[0].set_xlabel("normalized pupil radius")
-# for z in positions_z:
-#     fig, ax = plt.subplots()
-#     d1.set_transform(center_position=(0,0,z+offset+lens1.center_thickness))
-#     d2.set_transform(center_position=(0,0,d1.center_position[-1]+d1_thickness+1e-10))
-#     result = system.trace_and_plot_xz(rays=laser, ax = ax)
-#     elementphase_single, elementphase, names = result.phase_gain_all_elements()
-#     center_phase = elementphase[result.rays.central_beam_index]
-#     relative_phase = elementphase - center_phase[:, None]
-#     np.savez(savepath/f"relative_phase_at_z_{z*1e3:.0f}mm", relative_phase=relative_phase,radius=result.history[-2].radius, wavelengths = result.rays.wavelength, weights = result.rays.weights)
-#     plt.close()
-#     # fig, ax = plt.subplots(1,2)
-#     #plot_relative_phase(result, ax[0], "plasma")
-#     spectral_phase = rt.spatiotemporal.spatiotemporal_summary(result.rays, phase_order=2)
-#     radius_last_surface = result.history[-2].radius
-#     # ax[1].plot(radius_last_surface[result.rays.index_omega0]*1e-3, spectral_phase.phase_fit.gd_fs,".", label = f"postion = {z*1000} mm")
-#     ax_cumu[1].plot(radius_last_surface[result.rays.index_omega0]*1e-3, 
-#                     spectral_phase.phase_fit.gd_fs[result.history[0].central_ray_index]-spectral_phase.phase_fit.gd_fs,
-#                     ".", label = f"postion = {z*1000} mm")
-#     ax_cumu[0].plot(result.history[0].radius[result.rays.index_omega0]/result.history[0].radius[result.rays.index_omega0].max(),
-#                     result.rays.central_value(result.rays.phase)[result.rays.index_omega0]-result.rays.phase[result.rays.index_omega0],"x", label = f"postion = {z*1000} mm")
+for z in positions_z:
+    fig, ax = plt.subplots()
+    d1.set_transform(center_position=(0,0,z+offset+lens1.center_thickness))
+    d2.set_transform(center_position=(0,0,d1.center_position[-1]+d1_thickness+1e-10))
+    result = system.trace_and_plot_xz(rays=laser, ax = ax)
+    elementphase_single, elementphase, names = result.phase_gain_all_elements()
+    center_phase = elementphase[result.rays.central_beam_index]
+    relative_phase = elementphase - center_phase[:, None]
+    #np.savez(savepath/f"relative_phase_at_z_{z*1e3:.0f}mm", relative_phase=relative_phase,radius=result.history[-2].radius, wavelengths = result.rays.wavelength, weights = result.rays.weights)
+    plt.close()
+    # fig, ax = plt.subplots(1,2)
+    #plot_relative_phase(result, ax[0], "plasma")
+    spectral_phase = rt.spatiotemporal.spatiotemporal_summary(result.rays, phase_order=2)
+    radius_last_surface = result.history[-2].radius
+    # ax[1].plot(radius_last_surface[result.rays.index_omega0]*1e-3, spectral_phase.phase_fit.gd_fs,".", label = f"postion = {z*1000} mm")
+    # ax_cumu[1].plot(radius_last_surface[result.rays.index_omega0]*1e-3, 
+    #                 spectral_phase.phase_fit.gd_fs[result.history[0].central_ray_index]-spectral_phase.phase_fit.gd_fs,
+    #                 ".", label = f"postion = {z*1000} mm")
+    # ax_cumu[0].plot(result.history[0].radius[result.rays.index_omega0]/result.history[0].radius[result.rays.index_omega0].max(),
+    #                 result.rays.central_value(result.rays.phase)[result.rays.index_omega0]-result.rays.phase[result.rays.index_omega0],"x", label = f"postion = {z*1000} mm")
+    #spectral measurement
+    st_summary = rt.spatiotemporal.spatiotemporal_summary(result.rays)
+    print(st_summary)
 
+    #focal velocity measurement
+    fv_result = rt.spatiotemporal.focal_velocity_from_phase_fit(result.rays, st_summary.phase_fit)
+    print(fv_result)
 
 #     # ax[1].set_xlabel("radius at last lens @omeg0 [mm]")
 #     # ax[1].set_ylabel("GDD (fs)")

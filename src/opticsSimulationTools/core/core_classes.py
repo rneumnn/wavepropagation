@@ -165,6 +165,7 @@ class element_base(TransformMixin):
         surfaces: tuple[Surface, ...] | list[Surface] | None = None,
         n_environment=None,
         description: str | None = None,
+        custom_name: str|None = None,
     ):
         TransformMixin.__init__(
             self,
@@ -190,6 +191,7 @@ class element_base(TransformMixin):
             if description is not None
             else "Base class for optical elements."
         )
+        self.custom_name = custom_name
 
         self._update_properties()
 
@@ -523,7 +525,7 @@ class RayBundle:
     phase: np.ndarray
     valid: np.ndarray
     n_medium: RefractiveIndexFunction = AIR.n_function
-    last_element: element_base = None
+    last_element: element_base = element_base()
     surface: Surface = None
     spectrum: Spectrum = None
     action: str = None
@@ -1529,6 +1531,27 @@ class RayTraceResult:
         for i, e in enumerate(indx):
             gain[i,...] = self.phase_gain_for_element(self.element_history[1:][e])
         return gain, np.sum(gain, axis = 0), unique
+    
+    def get_rays_by_element_by_name(self, name):
+        """
+        Returns the RayBundle objects from history belonging to the specified element. Uses element_base.name. 
+        """
+        element_names = np.array([result.last_element.name for result in self.history])
+        if not name in element_names:
+            raise ValueError(f"Element {name} not in the history")
+        ind = np.argwhere(element_names == name)
+        return np.array(self.history)[ind][...,0]
+
+    def get_rays_by_element_by_custom_name(self, name):
+        """
+        Returns the RayBundle objects from history belonging to the specified element. Uses element_base.custom_name. 
+        """
+        element_names = np.array([result.last_element.custom_name for result in self.history])
+        if not name in element_names:
+            raise ValueError(f"Element {name} not in the history")
+        ind = np.argwhere(element_names == name)
+        return np.array(self.history)[ind][...,0]
+        
     
 class Surface(TransformMixin):
     """
