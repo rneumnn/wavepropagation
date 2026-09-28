@@ -306,6 +306,8 @@ def plot_raybundle_history_xz_by_wavelength(
     color_style = "rgb",
     alpha: float = 0.7,
     linewidth: float = 0.8,
+    only_valid: bool = True,
+
 ):
     """
     Plot several wavelengths from a spectral RayBundle history.
@@ -343,6 +345,7 @@ def plot_raybundle_history_xz_by_wavelength(
             alpha=alpha,
             linewidth=linewidth,
             label=f"{wl * 1e9:.1f} nm",
+            only_valid = only_valid,
             color=pick_color(wl, wavelengths=wavelengths,color_style=color_style)
         )
 

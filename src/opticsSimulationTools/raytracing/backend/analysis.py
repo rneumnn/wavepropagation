@@ -573,6 +573,10 @@ class FocalVelocityResult:
     dz_dt: np.ndarray
     valid: np.ndarray
     wavelength: np.ndarray | None = None
+    ray_valid: np.ndarray | None = None
+    ray_radius: np.ndarray | None = None
+    ray_z_focus: np.ndarray | None = None
+    ray_t_focus: np.ndarray | None = None
 
     @property
     def dz_dt_over_c(self):

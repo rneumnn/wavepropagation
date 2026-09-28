@@ -6,14 +6,20 @@ from ..core.core_classes import (
     RayTraceResult,
     element_base,
     FieldBase,
+    RayOpticalSystem,
+    Spectrum
 )
 
+import matplotlib.pyplot as plt
 from .lenses import ThickRealLens
+from .screens import Screen
 from ..raytracing.backend.surfaces import (
     check_lens_surface_separation, 
     check_surface_separation_common_frame, 
     SurfaceSeparationCheck
 )
+from ..raytracing.backend.spatiotemporal import spatiotemporal_summary
+from ..raytracing.backend.analysis import direction_angles
 
 @dataclass
 class DoubletSeparationCheck:
@@ -75,7 +81,7 @@ class GenericAssembly(element_base):
             center_position=center_position,
             rotation=rotation,
             parent=parent,
-            surfaces=None,
+            surfaces=(),
             n_environment=n_environment,
             description="Assembly of multiple optical elements.",
             custom_name=name,
@@ -152,17 +158,18 @@ class GenericAssembly(element_base):
                     f"{type(result).__name__}."
                 )
 
-        try:
-            return RayTraceResult(
-                rays=current,
-                element=self,
-                children=child_results,
-            )
-        except TypeError:
-            return RayTraceResult(
-                rays=current,
-                element=self,
-            )
+        hist = []
+        elements = []
+        for result in child_results:
+            hist.extend(result.history)
+            elements.extend(result.elements)
+
+        return RayTraceResult(
+            rays=current,
+            history=hist,
+            elements=elements,
+        )
+
 
     def _apply_for_wavepropagation(self, field: FieldBase) -> FieldBase:
         current = field
@@ -282,6 +289,15 @@ class GenericAssembly(element_base):
 
         return self
 
+    def plot_to_axes_xz(self, ax, **kwargs):
+            """
+            Plot all child elements into x-z axes.
+            """
+            for element in self.elements:
+                element.plot_to_axes_xz(ax, **kwargs)
+    
+            return ax
+
 
 class DoubletAssembly(element_base):
     """
@@ -359,7 +375,7 @@ class DoubletAssembly(element_base):
             center_position=center_position,
             rotation=rotation,
             parent=parent,
-            surfaces=None,
+            surfaces=(),
             n_environment=n_environment,
             description="Two-element lens doublet assembly.",
             custom_name=name,
@@ -494,7 +510,7 @@ class DoubletAssembly(element_base):
         -------
         DoubletSeparationCheck
         """
-        self.rebuild_geometry()
+        #self.rebuild_geometry()
 
         lens1_check = check_lens_surface_separation(
             self.lens1,
@@ -604,6 +620,9 @@ class DoubletAssembly(element_base):
 
         The doublet frame itself is not changed.
         """
+        self.lens1.rebuild_surfaces()
+        self.lens2.rebuild_surfaces()
+        
         self.lens1.parent = self
         self.lens2.parent = self
 
@@ -697,6 +716,26 @@ class DoubletAssembly(element_base):
 
         return self.rebuild_geometry()
 
+    def set_lens_radii(self, lens1_R1=None, lens1_R2=None, lens2_R1=None, lens2_R2=None):
+        """
+        Set one or both lens radii of curvature.
+
+        This does not move the lenses, but rebuilds geometry for consistency.
+        """
+        if lens1_R1 is not None:
+            self.lens1.R1 = float(lens1_R1)
+
+        if lens1_R2 is not None:
+            self.lens1.R2 = float(lens1_R2)
+
+        if lens2_R1 is not None:
+            self.lens2.R1 = float(lens2_R1)
+
+        if lens2_R2 is not None:
+            self.lens2.R2 = float(lens2_R2)
+
+        return self.rebuild_geometry()
+
     # ------------------------------------------------------------------
     # Access aliases
     # ------------------------------------------------------------------
@@ -734,17 +773,19 @@ class DoubletAssembly(element_base):
                     f"{type(result).__name__}."
                 )
 
-        try:
-            return RayTraceResult(
-                rays=current,
-                element=self,
-                children=child_results,
-            )
-        except TypeError:
-            return RayTraceResult(
-                rays=current,
-                element=self,
-            )
+
+        hist = []
+        elements = []
+        for result in child_results:
+            hist.extend(result.history)
+            elements.extend(result.elements)
+
+        return RayTraceResult(
+            rays=current,
+            history = hist,
+            elements = elements,
+        )
+
 
     def _apply_for_wavepropagation(self, field: FieldBase) -> FieldBase:
         """
@@ -762,13 +803,13 @@ class DoubletAssembly(element_base):
     # ------------------------------------------------------------------
 
     def plot_to_axes_xz(self, ax, **kwargs):
-        """
-        Plot all child elements into x-z axes.
-        """
-        for element in self.elements:
-            element.plot_to_axes_xz(ax, **kwargs)
-
-        return ax
+            """
+            Plot all child elements into x-z axes.
+            """
+            for element in self.elements:
+                element.plot_to_axes_xz(ax, **kwargs)
+    
+            return ax
 
     # ------------------------------------------------------------------
     # Info
@@ -789,6 +830,54 @@ class DoubletAssembly(element_base):
             "rotation": self.rotation.copy(),
         }
 
+    def doublet_test_system(self, spectrum:Spectrum)->tuple[RayOpticalSystem, RayBundle]:
+        self.set_transform(center_position=(0,0,2e-2))
+        fit_screen = Screen.FlatScreen(
+            center_position=(0,0,self.center_position[-1]+self.total_center_length+5e-2), custom_name="fit_plane",
+            aperture_radius=self.lens2.aperture+1e-2
+        )
+        laser = RayBundle.collimated_line_spectral(
+            np.linspace(-self.first.aperture, self.first.aperture, 101),
+            z=0, spectrum=spectrum
+        )
+        return RayOpticalSystem([self,fit_screen]), laser
+
+    def doublet_rgd(self, spectrum:Spectrum):
+        orignal_position = self.center_position
+        system, laser = self.doublet_test_system(spectrum)
+        sys_plot, sys_ax = plt.subplots(1,1)
+        result = system.trace_and_plot_xz(laser, sys_ax, color_style="plama")
+        fit_rays = result.get_rays_by_element_by_custom_name("fit_plane")[0]
+        phase_fit = spatiotemporal_summary(fit_rays,3)
+        plot_rgd, ax_rgd = plt.subplots(1,1)
+        ax_rgd.set_title(f"RGD for doublet {self.custom_name}")
+        ax_rgd.set_xlabel("radius at fitplane [mm]")
+        ax_rgd.set_ylabel("relative group delay [fs]")
+        radius = np.sqrt(phase_fit.positions[0]**2+phase_fit.positions[1]**2)
+        ax_rgd.plot(fit_rays.radius[fit_rays.index_omega0]*1e3,phase_fit.relative_gd*1e15)
+        plt.show()
+        self.set_transform(center_position=orignal_position)
+        return phase_fit.relative_gd, radius
+
+    def doublet_divergence(self, spectrum:Spectrum):
+        orignal_position = self.center_position
+        system, laser = self.doublet_test_system(spectrum)
+        sys_plot, sys_ax = plt.subplots(1,1)
+        result = system.trace_and_plot_xz(laser, sys_ax)
+        fit_plane = result.get_rays_by_element_by_custom_name("fit_plane")[0]
+        div_plot, div_axes = plt.subplots(1,1)
+        div_x, div_y = direction_angles(fit_plane)
+        divergence = div_x[fit_plane.index_omega0,:]
+        mask = np.where(fit_plane.positions[fit_plane.index_omega0,:,0] > 0, True, False)
+        masked_radius = fit_plane.radius[fit_plane.index_omega0][mask]
+        div_axes.plot(masked_radius*1000, divergence[mask]*1000) 
+        div_axes.set_title(f"divergence after doublet {self.custom_name}")
+        div_axes.set_xlabel(f"radius at fitplane [mm]")
+        div_axes.set_ylabel("divergence [mrad]")
+        self.set_transform(center_position=orignal_position)
+        plt.show()
+        return div_x, div_y, masked_radius
+
 from typing import NamedTuple
 class doublet_config(NamedTuple):
     d1_thickness: float
@@ -800,9 +889,13 @@ class doublet_config(NamedTuple):
     d1_mat: callable
     d2_mat: callable
     gap: float = 0
-    name = None
+    name:str|None = None
+    aperture_radius:float = 76.2e-3/2
 
-    def create_lenses(self, center_position=(0,0,0), aperture=76.2e-3/2):
+    def create_lenses(self, center_position=(0,0,0), aperture=None):
+        if aperture is None:
+            aperture = self.aperture_radius
+
         d1 = ThickRealLens(
             R1 = self.d1_R1,
             R2= self.d1_R2,
@@ -822,7 +915,7 @@ class doublet_config(NamedTuple):
         )
         return d1,d2
 
-    def create_doublet(self, center_position=(0,0,0), aperture=76.2e-3/2,
+    def create_doublet(self, center_position=(0,0,0), aperture=None,
                        **kwargs):
         d1,d2 = self.create_lenses(center_position, aperture)
         name = self.name if self.name is not None else "doublet_assembly"

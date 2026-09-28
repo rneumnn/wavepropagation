@@ -1882,3 +1882,40 @@ class RayOpticalSystem:
             self.append(other)
 
         return self
+
+
+####################
+## Wavepropagation
+
+@dataclass
+class RayWavefront:
+    """
+    Wavefront reconstructed from a RayBundle on a transverse grid.
+
+    This is an adapter object between raytracing RayBundle and
+    wavepropagation Field.
+    """
+    x: np.ndarray
+    y: np.ndarray
+    z: float
+
+    opd: np.ndarray          # [m]
+    phase: np.ndarray        # [rad]
+    amplitude: np.ndarray    # field amplitude, not intensity
+    intensity: np.ndarray    # amplitude**2
+
+    wavelength: float
+    n_medium: float = 1.0
+    valid: np.ndarray | None = None
+
+    @property
+    def k0(self):
+        return 2.0 * np.pi / self.wavelength
+
+    @property
+    def k(self):
+        return self.n_medium * self.k0
+
+    @property
+    def complex_amplitude(self):
+        return self.amplitude * np.exp(1j * self.phase)

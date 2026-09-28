@@ -27,6 +27,10 @@ from .gratings import (
     ReliefPhaseGrating,
 )
 
+from .assembles import(
+    GenericAssembly
+)
+
 from .polarization import (
     Polarizer,
     WavePlate,
@@ -34,7 +38,7 @@ from .polarization import (
     QuarterWavePlate,
 )
 
-from .apertures import CircularAperture
+from .apertures import CircularAperture, FilledCircularAperture
 
 __all__ = [
     "ThinLens",

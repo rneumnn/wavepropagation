@@ -15,6 +15,7 @@ def sellmeier_n(B, C) -> RefractiveIndexFunction:
     The Sellmeier equation is given by:
         n^2(wavelength) = 1 + sum(B_i * wavelength^2 / (wavelength^2 - C_i))
         where B_i and C_i are the Sellmeier coefficients in meters and meters^2, respectively.
+
         :param B: list or array of Sellmeier coefficients B_i
         :param C: list or array of Sellmeier coefficients C_i
         :return: function n(wavelength) that calculates the refractive index for a given wavelength or array of wavelengths
@@ -30,6 +31,31 @@ def sellmeier_n(B, C) -> RefractiveIndexFunction:
         wl2 = wl**2
         terms = B * wl2[..., None] / (wl2[..., None] - C)
         return np.sqrt(1.0 + np.sum(terms, axis=-1))
+
+    return n
+
+def sellmeier_n_A(A,B,C) -> RefractiveIndexFunction:
+    """Returns a function that calculates the refractive index n(wavelength) using the Sellmeier equation with coefficients A, B and C.
+    The Sellmeier equation is given by:
+        n^2(wavelength)-1 = A + sum(B_i * wavelength^2 / (wavelength^2 - C_i))
+        where A, B_i and C_i are the Sellmeier coefficients in meters and meters^2, respectively.
+
+        :param A: constant term in the Sellmeier equation
+        :param B: list or array of Sellmeier coefficients B_i
+        :param C: list or array of Sellmeier coefficients C_i
+        :return: function n(wavelength) that calculates the refractive index for a given wavelength or array of wavelengths
+    """
+    B = np.asarray(B, dtype=float)
+    C = np.asarray(C, dtype=float)
+
+    if B.shape != C.shape:
+        raise ValueError("B and C must have the same shape.")
+
+    def n(wavelength):
+        wl = np.asarray(wavelength, dtype=float)
+        wl2 = wl**2
+        terms = B * wl2[..., None] / (wl2[..., None] - C)
+        return np.sqrt(1+ A + np.sum(terms, axis=-1))
 
     return n
 
@@ -69,6 +95,22 @@ class Material:
             n_function=sellmeier_n(B_arr, C_arr),
             sellmeier_coefficients=(B_arr, C_arr),
         )
+
+    @classmethod
+    def sellmeier_A(
+        cls,
+        name: str,
+        A: float,
+        B: list[float],
+        C: list[float],
+    ) -> "Material":
+        B_arr = np.asarray(B, dtype=float)
+        C_arr = np.asarray(C, dtype=float)
+        return cls(
+            name=name,
+            n_function=sellmeier_n_A(A, B_arr, C_arr),
+            sellmeier_coefficients=(A, B_arr, C_arr),
+    )
     
     @classmethod
     def sellmeier_from_dict(

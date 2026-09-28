@@ -510,7 +510,7 @@ class ThickRealLens(element_base):
         aperture: float = 1e-2,
         n_slices: int = 64,
         hankel_backend=None,
-        min_separation: float = 0.2e-3,
+        min_separation: float = 1e-8,
         rotation=None,
         parent=None,
     ):
@@ -529,6 +529,7 @@ class ThickRealLens(element_base):
         self.aperture = float(aperture)
         self.n_slices = int(n_slices)
         self.hankel_backend = hankel_backend
+        self.min_separation = float(min_separation)
 
         if self.n_slices <= 0:
             raise ValueError("n_slices must be positive.")
@@ -579,6 +580,51 @@ class ThickRealLens(element_base):
                 f"{self.name} is not physically valid with those parameters. "
                 "The surface separation is not valid.\n"
                 f"Required minimum separation: {min_separation} m\n"
+                f"Actual minimum separation: {separation.min_separation} m\n"
+                f"Critical radius: {separation.r_crit} m\n"
+                f"Aperture radius: {self.aperture} m\n"
+                "Increase center_thickness or check R1/R2."
+            )
+        
+    def rebuild_surfaces(self):
+        """
+        Rebuild the child surfaces based on the current lens parameters.
+
+        This is useful if R1, R2, center_thickness, or aperture have been
+        modified after initialization.
+        """
+        
+        self.S1 = SphericalSagSurface(
+            center_position=np.array([0.0, 0.0, 0.0], dtype=float),
+            R=self.R1,
+            aperture_radius=self.aperture,
+            rotation=np.eye(3, dtype=float),
+            parent=self,
+        )
+
+        self.S2 = SphericalSagSurface(
+            center_position=np.array(
+                [0.0, 0.0, self.center_thickness],
+                dtype=float,
+            ),
+            R=self.R2,
+            aperture_radius=self.aperture,
+            rotation=np.eye(3, dtype=float),
+            parent=self,
+        )
+
+        self.surfaces = (self.S1, self.S2)
+
+        separation = check_lens_surface_separation(
+            self,
+            min_separation=self.min_separation,
+        )
+
+        if not separation.valid:
+            raise ValueError(
+                f"{self.name} is not physically valid with those parameters. "
+                "The surface separation is not valid.\n"
+                f"Required minimum separation: {self.min_separation} m\n"
                 f"Actual minimum separation: {separation.min_separation} m\n"
                 f"Critical radius: {separation.r_crit} m\n"
                 f"Aperture radius: {self.aperture} m\n"

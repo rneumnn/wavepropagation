@@ -580,6 +580,62 @@ def nearest_omega_index(omega, omega0):
     return int(np.nanargmin(np.abs(omega - omega0)))
 
 
+def ray_valid_mask_from_spectral_rays(
+    rays: RayBundle,
+    value=None,
+    min_valid_spectral: int = 1,
+):
+    """
+    Return ray-shaped validity mask.
+
+    For spectral RayBundle:
+        valid ray if at least min_valid_spectral wavelengths are valid.
+
+    If value is given, also require finite value.
+    """
+    valid = np.asarray(rays.valid, dtype=bool)
+
+    if is_spectral_bundle(rays):
+        ray_valid = np.count_nonzero(valid, axis=0) >= min_valid_spectral
+    else:
+        ray_valid = valid
+
+    if value is not None:
+        value = np.asarray(value)
+        ray_valid = ray_valid & np.isfinite(value)
+
+    return ray_valid
+
+
+def ray_valid_mask_at_omega0(
+    rays: RayBundle,
+    value=None,
+    omega0: float | None = None,
+):
+    """
+    Return ray-shaped valid mask at omega0.
+    """
+    if is_spectral_bundle(rays):
+        omega = angular_frequencies(rays)
+
+        if omega0 is None:
+            if getattr(rays, "omega0", None) is not None:
+                omega0 = float(np.asarray(rays.omega0).reshape(-1)[0])
+            else:
+                omega0 = float(np.mean(omega))
+
+        i0 = nearest_omega_index(omega, omega0)
+        ray_valid = np.asarray(rays.valid[i0], dtype=bool)
+    else:
+        ray_valid = np.asarray(rays.valid, dtype=bool)
+
+    if value is not None:
+        value = np.asarray(value)
+        ray_valid = ray_valid & np.isfinite(value)
+
+    return ray_valid
+
+
 def spectral_phase_fit_from_rays(
     rays: RayBundle,
     order: int = 2,
@@ -777,68 +833,143 @@ def spectral_phase_fit_between_rays(
 
     return fit
 
-def central_spatial_value(rays: RayBundle, value):
+def central_spatial_value(
+    rays: RayBundle,
+    value,
+    fallback: str = "nearest_axis",
+    min_valid_spectral: int = 1,
+):
     """
-    Return central ray value for a ray-shaped array without spectral axis.
+    Return central ray value if the central ray is valid.
 
-    Example:
-        gd.shape == (N_rays,)
-        returns scalar gd_center
+    If the central ray is invalid, fall back to nearest valid axis ray or mean.
     """
     value = np.asarray(value, dtype=float)
+    value_flat = value.reshape(-1)
+
+    valid = ray_valid_mask_from_spectral_rays(
+        rays,
+        value=value,
+        min_valid_spectral=min_valid_spectral,
+    ).reshape(-1)
+
     idx = int(rays.central_ray_index)
-    return value.reshape(-1)[idx]
+
+    if (
+        0 <= idx < value_flat.size
+        and valid[idx]
+        and np.isfinite(value_flat[idx])
+    ):
+        return value_flat[idx]
+
+    if fallback == "nearest_axis":
+        return nearest_axis_value(
+            rays,
+            value,
+            min_valid_spectral=min_valid_spectral,
+        )
+
+    if fallback == "mean":
+        return np.nanmean(np.where(valid, value_flat, np.nan))
+
+    raise ValueError(
+        "Central ray is invalid and no valid fallback was selected."
+    )
 
 
 def relative_group_delay_from_rays(
     rays: RayBundle,
     gd,
     reference: str | float = "central_ray",
+    min_valid_spectral: int = 1,
 ):
+    """
+    Return GD relative to a valid reference ray/value.
+
+    Automatically ignores invalid rays from rays.valid.
+    """
     gd = np.asarray(gd, dtype=float)
 
+    valid = ray_valid_mask_from_spectral_rays(
+        rays,
+        value=gd,
+        min_valid_spectral=min_valid_spectral,
+    )
+
     if reference == "central_ray":
-        ref = central_spatial_value(rays, gd)
+        ref = central_spatial_value(
+            rays,
+            gd,
+            fallback="nearest_axis",
+            min_valid_spectral=min_valid_spectral,
+        )
 
     elif reference == "mean":
-        ref = np.nanmean(gd)
+        ref = np.nanmean(np.where(valid, gd, np.nan))
 
     elif reference == "nearest_axis":
-        ref = nearest_axis_value(rays, gd)
+        ref = nearest_axis_value(
+            rays,
+            gd,
+            min_valid_spectral=min_valid_spectral,
+        )
 
     else:
         ref = float(reference)
 
-    return gd - ref
+    out = gd - ref
+
+    # Important: invalid rays should not silently look usable downstream.
+    out = np.where(valid, out, np.nan)
+
+    return out
 
 
-def nearest_axis_value(rays: RayBundle, value):
+def nearest_axis_value(
+    rays: RayBundle,
+    value,
+    min_valid_spectral: int = 1,
+    omega0: float | None = None,
+):
     """
-    Return value of ray nearest to optical axis at omega0 or nearest omega0.
+    Return value of the valid ray nearest to the optical axis at omega0.
     """
     value = np.asarray(value, dtype=float)
 
-    omega = angular_frequencies(rays)
+    omega = angular_frequencies(rays) if is_spectral_bundle(rays) else None
 
-    if getattr(rays, "omega0", None) is not None:
-        omega0 = float(np.asarray(rays.omega0).reshape(-1)[0])
+    if is_spectral_bundle(rays):
+        if omega0 is None:
+            if getattr(rays, "omega0", None) is not None:
+                omega0 = float(np.asarray(rays.omega0).reshape(-1)[0])
+            else:
+                omega0 = float(np.mean(omega))
+
+        i0 = nearest_omega_index(omega, omega0)
+        pos = np.asarray(rays.positions[i0], dtype=float)
     else:
-        omega0 = float(np.mean(omega))
+        pos = np.asarray(rays.positions, dtype=float)
 
-    i0 = nearest_omega_index(omega, omega0)
-
-    pos = rays.positions[i0]
-    valid = np.any(rays.valid, axis=0)
+    valid = ray_valid_mask_from_spectral_rays(
+        rays,
+        value=value,
+        min_valid_spectral=min_valid_spectral,
+    )
 
     xy = pos[..., :2].reshape(-1, 2)
     valid_flat = valid.reshape(-1)
+    value_flat = value.reshape(-1)
 
     r2 = np.sum(xy**2, axis=-1)
-    r2 = np.where(valid_flat, r2, np.nan)
+    r2 = np.where(valid_flat & np.isfinite(value_flat), r2, np.nan)
+
+    if not np.any(np.isfinite(r2)):
+        raise ValueError("No valid ray available for nearest_axis reference.")
 
     idx = int(np.nanargmin(r2))
 
-    return value.reshape(-1)[idx]
+    return value_flat[idx]
+
 
 def fit_pulse_front_quadratic(
     positions,
@@ -992,23 +1123,23 @@ def spatiotemporal_summary(
         raise ValueError("phase_order must be >= 1 to compute group delay.")
 
     gd = fit.gd
-
+    n_required = phase_order + 1
     rel_gd = relative_group_delay_from_rays(
         rays=rays,
         gd=gd,
         reference=reference,
+        min_valid_spectral=phase_order + 1,
     )
 
     positions = fit.positions
     if positions is None:
         raise ValueError("Spectral fit did not return positions.")
 
-    n_valid_spectral = np.count_nonzero(np.asarray(rays.valid, dtype=bool), axis=0)
-
-    valid = (
-        np.isfinite(rel_gd)
-        & (n_valid_spectral >= phase_order + 1)
-)
+    valid = ray_valid_mask_from_spectral_rays(
+        rays,
+        value=rel_gd,
+        min_valid_spectral=phase_order + 1,
+    )
 
     pulse_front_fit = fit_pulse_front_quadratic(
         positions=positions,
@@ -1021,6 +1152,7 @@ def spatiotemporal_summary(
         rays=rays,
         phase_fit=fit,
         reference=reference,
+        min_valid_spectral=n_required,
     )
 
     return SpatiotemporalSummary(
@@ -1038,28 +1170,44 @@ def spatial_phasefront(
     rays: RayBundle,
     phase_fit: SpectralPhaseFit,
     reference: str | float = "central_ray",
+    min_valid_spectral: int = 1,
 ):
     """
     Return spatial phasefront at omega0.
 
-    phasefront_phi:
-        phi0(x,y) - phi0_ref in rad
-
-    opd:
-        phasefront_phi / k0(omega0) in meters
+    Invalid rays are set to NaN.
     """
     phi0 = np.asarray(phase_fit.phi0, dtype=float)
 
+    valid = ray_valid_mask_from_spectral_rays(
+        rays,
+        value=phi0,
+        min_valid_spectral=min_valid_spectral,
+    )
+
     if reference == "central_ray":
-        phi_ref = central_spatial_value(rays, phi0)
+        phi_ref = central_spatial_value(
+            rays,
+            phi0,
+            fallback="nearest_axis",
+            min_valid_spectral=min_valid_spectral,
+        )
 
     elif reference == "mean":
-        phi_ref = np.nanmean(phi0)
+        phi_ref = np.nanmean(np.where(valid, phi0, np.nan))
+
+    elif reference == "nearest_axis":
+        phi_ref = nearest_axis_value(
+            rays,
+            phi0,
+            min_valid_spectral=min_valid_spectral,
+        )
 
     else:
         phi_ref = float(reference)
 
     phasefront_phi = phi0 - phi_ref
+    phasefront_phi = np.where(valid, phasefront_phi, np.nan)
 
     k0_omega0 = phase_fit.omega0 / C0
     opd = phasefront_phi / k0_omega0
@@ -1190,6 +1338,13 @@ def focal_velocity_from_relative_gd(
 
     relative_gd = np.asarray(relative_gd, dtype=float)
 
+    valid0 = np.asarray(sub.valid, dtype=bool)
+
+    if relative_gd.shape != sub.shape:
+        relative_gd = np.broadcast_to(relative_gd, sub.shape)
+
+    relative_gd = np.where(valid0 & np.isfinite(relative_gd), relative_gd, np.nan)
+
     return _focal_velocity_mono_with_extra_delay(
         sub, relative_gd,
         forward_only=forward_only,
@@ -1229,6 +1384,7 @@ def focal_velocity_from_phase_fit(
         rays=rays,
         gd=phase_fit.gd,
         reference=reference,
+        min_valid_spectral=1,
     )
 
     return focal_velocity_from_relative_gd(
@@ -1394,6 +1550,10 @@ def _focal_velocity_mono_with_extra_delay(
         dz_dt=dz_dt,
         valid=valid_bins,
         wavelength=None,
+        ray_valid=valid,
+        ray_radius=radius,
+        ray_z_focus=z_focus_ray,
+        ray_t_focus=t_focus_ray,
     )
 
 def spectral_focal_velocity(

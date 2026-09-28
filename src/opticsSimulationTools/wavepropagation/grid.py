@@ -143,6 +143,14 @@ Caution
     @property
     def shape(self):
         return self.X.shape
+
+    @property
+    def dx(self):
+        return self.dxy
+
+    @property
+    def dy(self):
+        return self.dxy
     
 @dataclass
 class RadialGrid:
@@ -234,7 +242,7 @@ class QDHTRadialGrid(RadialGrid):
         return self.Rmax * 2
     
 
-from pyhank import HankelTransform
+#from pyhank import HankelTransform
 class PyHankRadialGrid(RadialGrid):
     """
     Radial grid wrapper for PyHank.
